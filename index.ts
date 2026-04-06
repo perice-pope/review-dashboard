@@ -22,7 +22,7 @@ function json(data: unknown, status = 200) {
 
 async function getDashboardData() {
   const [songsResult, shotsResult, runsResult] = await Promise.all([
-    client.from("songs").select("id, title").order("title"),
+    client.from("songs").select("id, song_title").order("song_title"),
     client
       .from("production_queue")
       .select("*")
@@ -74,6 +74,17 @@ async function handleAction(body: Record<string, unknown>) {
           director_signoff_status: "approved",
           updated_at: new Date().toISOString(),
         })
+        .eq("id", body.shot_id as string);
+      if (error) throw error;
+      break;
+    }
+    case "change_status": {
+      const allowed = ["queued", "generating", "generated", "review_pending", "revision_needed", "approved", "rejected", "in_assembly", "in_post", "final_review", "complete", "shipped"];
+      const newStatus = body.status as string;
+      if (!allowed.includes(newStatus)) throw new Error("Invalid status: " + newStatus);
+      const { error } = await client
+        .from("production_queue")
+        .update({ status: newStatus, updated_at: new Date().toISOString() })
         .eq("id", body.shot_id as string);
       if (error) throw error;
       break;

@@ -26,6 +26,7 @@
   .dot-pending { background: #d4a355; }
   .dot-rejected { background: #8b3a1f; }
   .dot-in-post { background: #5b8a7a; }
+  .dot-revision { background: #c45a2c; }
 
   .btn-download { background: #2b3d52; color: #e8d5b0; border: 1px solid #5b8a7a; padding: 8px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600; transition: background 0.2s; }
   .btn-download:hover { background: #3a4d62; }
@@ -46,6 +47,12 @@
   .shot-card.border-approved { border-left: 3px solid #2d8a4e; }
   .shot-card.border-rejected { border-left: 3px solid #8b3a1f; }
   .shot-card.border-in_post { border-left: 3px solid #d4a355; }
+  .shot-card.border-revision_needed { border-left: 3px solid #c45a2c; }
+  .shot-card.border-complete, .shot-card.border-shipped { border-left: 3px solid #1a5a2a; }
+
+  /* Status select dropdown */
+  .status-select { background: #0f1419; color: #e8d5b0; border: 1px solid #2b3d52; padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; }
+  .status-select:focus { border-color: #5b8a7a; outline: none; }
 
   .shot-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
   .shot-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -58,7 +65,10 @@
   .status-generated, .status-review_pending, .status-queued, .status-generating { background: #2b3d52; color: #e8d5b0; }
   .status-approved { background: #2d8a4e; color: white; }
   .status-rejected, .status-failed { background: #8b3a1f; color: white; }
-  .status-in_post { background: #d4a355; color: #1a2535; }
+  .status-in_post, .status-in_assembly { background: #d4a355; color: #1a2535; }
+  .status-revision_needed { background: #c45a2c; color: white; }
+  .status-final_review { background: #5b8a7a; color: white; }
+  .status-complete, .status-shipped { background: #1a5a2a; color: white; }
 
   .director-badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; }
   .director-pending { background: #2a2000; color: #d4a355; border: 1px solid #d4a355; }
@@ -210,7 +220,7 @@ function renderAll() {
 
   // Build song lookup
   var songMap = {};
-  for (var i = 0; i < songs.length; i++) songMap[songs[i].id] = songs[i].title;
+  for (var i = 0; i < songs.length; i++) songMap[songs[i].id] = songs[i].song_title;
 
   // Group runs by production_queue_id
   var runMap = {};
@@ -221,12 +231,13 @@ function renderAll() {
   }
 
   // Count statuses
-  var counts = { approved: 0, pending: 0, rejected: 0, in_post: 0, total: shots.length };
+  var counts = { approved: 0, pending: 0, rejected: 0, in_post: 0, revision_needed: 0, total: shots.length };
   for (var i = 0; i < shots.length; i++) {
     var s = shots[i].status;
     if (s === 'approved') counts.approved++;
     else if (s === 'rejected') counts.rejected++;
-    else if (s === 'in_post') counts.in_post++;
+    else if (s === 'in_post' || s === 'in_assembly') counts.in_post++;
+    else if (s === 'revision_needed') counts.revision_needed++;
     else counts.pending++;
   }
 
@@ -238,7 +249,7 @@ function renderAll() {
   var sel = document.getElementById('song-filter');
   sel.innerHTML = '<option value="all">All Songs</option>';
   for (var i = 0; i < songs.length; i++) {
-    sel.innerHTML += '<option value="' + songs[i].id + '">' + esc(songs[i].title) + '</option>';
+    sel.innerHTML += '<option value="' + songs[i].id + '">' + esc(songs[i].song_title) + '</option>';
   }
   sel.value = currentSongId;
   sel.onchange = function() { currentSongId = sel.value; applyFilters(); };
@@ -247,6 +258,7 @@ function renderAll() {
   document.getElementById('summary-bar').innerHTML =
     '<div class="summary-item"><span class="summary-dot dot-approved"></span> ' + counts.approved + ' Approved</div>' +
     '<div class="summary-item"><span class="summary-dot dot-pending"></span> ' + counts.pending + ' Pending</div>' +
+    '<div class="summary-item"><span class="summary-dot dot-revision"></span> ' + counts.revision_needed + ' Revision</div>' +
     '<div class="summary-item"><span class="summary-dot dot-in-post"></span> ' + counts.in_post + ' In Post</div>' +
     '<div class="summary-item"><span class="summary-dot dot-rejected"></span> ' + counts.rejected + ' Rejected</div>';
 
@@ -255,6 +267,7 @@ function renderAll() {
   fb.innerHTML =
     '<button class="filter-btn' + (currentFilter === 'all' ? ' active' : '') + '" onclick="setFilter(\'all\',this)">All (' + counts.total + ')</button>' +
     '<button class="filter-btn' + (currentFilter === 'pending' ? ' active' : '') + '" onclick="setFilter(\'pending\',this)">Pending</button>' +
+    '<button class="filter-btn' + (currentFilter === 'revision_needed' ? ' active' : '') + '" onclick="setFilter(\'revision_needed\',this)">Revision Needed</button>' +
     '<button class="filter-btn' + (currentFilter === 'approved' ? ' active' : '') + '" onclick="setFilter(\'approved\',this)">Approved</button>' +
     '<button class="filter-btn' + (currentFilter === 'in_post' ? ' active' : '') + '" onclick="setFilter(\'in_post\',this)">In Post</button>' +
     '<button class="filter-btn' + (currentFilter === 'rejected' ? ' active' : '') + '" onclick="setFilter(\'rejected\',this)">Rejected</button>';
@@ -281,7 +294,8 @@ function renderAll() {
     var missingNote = (shot.capcut_notes && shot.capcut_notes.missing_assets_note) || '';
     var dirSignoff = shot.director_signoff ? JSON.stringify(shot.director_signoff, null, 2) : '';
     var driveFolderUrl = shot.drive_folder_url || '';
-    var borderClass = (shot.status === 'approved' || shot.status === 'rejected' || shot.status === 'in_post') ? ' border-' + shot.status : '';
+    var borderedStatuses = ['approved', 'rejected', 'in_post', 'revision_needed', 'complete', 'shipped'];
+    var borderClass = (borderedStatuses.indexOf(shot.status) !== -1) ? ' border-' + shot.status : '';
 
     // Video cards
     var vhtml = '';
@@ -333,10 +347,16 @@ function renderAll() {
     }
     html += '</div>';
 
-    // Shot actions
+    // Shot actions — status dropdown + director button
+    var allStatuses = ['queued','generating','generated','review_pending','revision_needed','approved','rejected','in_assembly','in_post','final_review','complete','shipped'];
+    var statusLabels = {queued:'Queued',generating:'Generating',generated:'Generated',review_pending:'Review Pending',revision_needed:'Revision Needed',approved:'Approved',rejected:'Rejected',in_assembly:'In Assembly',in_post:'In Post',final_review:'Final Review',complete:'Complete',shipped:'Shipped'};
     html += '<div class="shot-actions">';
-    html += '<button class="btn-shot btn-shot-approve" onclick="updateShot(\'' + shot.id + '\',\'approved\')"' + (shot.status === 'approved' ? ' disabled' : '') + '>Approve Shot</button>';
-    html += '<button class="btn-shot btn-shot-in-post" onclick="updateShot(\'' + shot.id + '\',\'in_post\')"' + (shot.status === 'in_post' ? ' disabled' : '') + '>Send to Post</button>';
+    html += '<select class="status-select" onchange="changeStatus(\'' + shot.id + '\',this.value)">';
+    for (var si = 0; si < allStatuses.length; si++) {
+      var sv = allStatuses[si];
+      html += '<option value="' + sv + '"' + (shot.status === sv ? ' selected' : '') + '>' + statusLabels[sv] + '</option>';
+    }
+    html += '</select>';
     if (dirStatus !== 'approved') html += '<button class="btn-shot btn-shot-director" onclick="approveDirector(\'' + shot.id + '\')">Approve Director Signoff</button>';
     html += '</div></div>';
   }
@@ -356,6 +376,7 @@ function setFilter(filter, btn) {
 
 function applyFilters() {
   var pendingStatuses = ['queued', 'generating', 'generated', 'review_pending'];
+  var inPostStatuses = ['in_post', 'in_assembly'];
   var cards = document.querySelectorAll('.shot-card');
   for (var i = 0; i < cards.length; i++) {
     var card = cards[i];
@@ -363,6 +384,7 @@ function applyFilters() {
     var songId = card.getAttribute('data-song-id');
     var matchesStatus = currentFilter === 'all'
       || (currentFilter === 'pending' && pendingStatuses.indexOf(status) !== -1)
+      || (currentFilter === 'in_post' && inPostStatuses.indexOf(status) !== -1)
       || status === currentFilter;
     var matchesSong = currentSongId === 'all' || songId === currentSongId;
     card.style.display = (matchesStatus && matchesSong) ? '' : 'none';
@@ -383,9 +405,9 @@ function reviewRun(id, action) {
   });
 }
 
-function updateShot(id, status) {
-  apiCall({ action: 'update_shot', shot_id: id, status: status }).then(function() {
-    toast('Shot updated to ' + status);
+function changeStatus(id, status) {
+  apiCall({ action: 'change_status', shot_id: id, status: status }).then(function() {
+    toast('Status changed to ' + status);
     loadData();
   }).catch(function(err) { toast(err.message, 'error'); });
 }
