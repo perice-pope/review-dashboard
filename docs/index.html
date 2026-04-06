@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Review Dashboard — The Roommates</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1419; color: #e8d5b0; padding: 24px; min-height: 100vh; }
+
+  /* Header */
+  header { margin-bottom: 28px; }
+  h1 { color: #c45a2c; font-size: 28px; margin-bottom: 6px; letter-spacing: -0.5px; }
+  .subtitle { color: #5b8a7a; font-size: 14px; margin-bottom: 20px; }
+
+  /* Controls */
+  .controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .song-select { background: #1a2535; color: #e8d5b0; border: 1px solid #2b3d52; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .song-select:focus { border-color: #5b8a7a; outline: none; }
+
+  /* Summary */
+  .summary-bar { display: flex; gap: 16px; flex-wrap: wrap; }
+  .summary-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .summary-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot-approved { background: #2d8a4e; }
+  .dot-pending { background: #d4a355; }
+  .dot-rejected { background: #8b3a1f; }
+  .dot-in-post { background: #5b8a7a; }
+
+  .btn-download { background: #2b3d52; color: #e8d5b0; border: 1px solid #5b8a7a; padding: 8px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600; transition: background 0.2s; }
+  .btn-download:hover { background: #3a4d62; }
+
+  .btn-refresh { background: #1a2535; color: #5b8a7a; border: 1px solid #5b8a7a; padding: 8px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600; transition: background 0.2s; }
+  .btn-refresh:hover { background: #2b3d52; }
+
+  /* Filter bar */
+  .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .filter-btn { background: #1a2535; color: #e8d5b0; border: 1px solid #2b3d52; padding: 7px 16px; border-radius: 20px; font-size: 12px; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+  .filter-btn:hover { border-color: #5b8a7a; }
+  .filter-btn.active { background: #c45a2c; border-color: #c45a2c; color: white; }
+
+  /* Shot cards */
+  .shots-grid { display: grid; gap: 24px; }
+  .shot-card { background: #1a2535; border-radius: 12px; padding: 20px; border: 1px solid #2b3d52; transition: border-color 0.2s; }
+  .shot-card:hover { border-color: #5b8a7a; }
+  .shot-card.border-approved { border-left: 3px solid #2d8a4e; }
+  .shot-card.border-rejected { border-left: 3px solid #8b3a1f; }
+  .shot-card.border-in_post { border-left: 3px solid #d4a355; }
+
+  .shot-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
+  .shot-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .shot-name { font-size: 17px; font-weight: 700; color: #f5e6c8; }
+  .concept-tag { background: #c45a2c; color: white; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+  .cost-tag { background: #1a3a2a; color: #5b8a7a; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .song-tag { font-size: 11px; color: #5b8a7a; }
+
+  .status-badge { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+  .status-generated, .status-review_pending, .status-queued, .status-generating { background: #2b3d52; color: #e8d5b0; }
+  .status-approved { background: #2d8a4e; color: white; }
+  .status-rejected, .status-failed { background: #8b3a1f; color: white; }
+  .status-in_post { background: #d4a355; color: #1a2535; }
+
+  .director-badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; }
+  .director-pending { background: #2a2000; color: #d4a355; border: 1px solid #d4a355; }
+  .director-approved { background: #0a2a0a; color: #2d8a4e; border: 1px solid #2d8a4e; }
+
+  /* Video cards */
+  .videos-row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+  .video-card { background: #0f1419; border-radius: 8px; padding: 10px; border: 2px solid #2b3d52; width: 200px; transition: border-color 0.2s; position: relative; }
+  .video-card video { width: 100%; border-radius: 5px; margin-bottom: 7px; display: block; background: #000; }
+  .no-video { height: 90px; display: flex; align-items: center; justify-content: center; color: #5b8a7a; font-size: 12px; }
+  .char-name { font-size: 12px; font-weight: 700; color: #d4a355; }
+  .tool-name { font-size: 10px; color: #5b8a7a; margin-top: 1px; }
+  .file-name { font-size: 10px; color: #5b8a7a; margin-top: 2px; word-break: break-all; line-height: 1.3; }
+  .expiry-warning { display: none; background: #2a1a00; border: 1px solid #c45a2c; border-radius: 4px; padding: 4px 8px; font-size: 10px; color: #e8a060; margin-top: 4px; }
+  .expiry-warning.show { display: block; }
+
+  .btn-row { display: flex; gap: 4px; margin-top: 7px; flex-wrap: wrap; }
+  .btn { padding: 5px 8px; border-radius: 5px; border: none; cursor: pointer; font-size: 10px; font-weight: 700; transition: opacity 0.15s; }
+  .btn:hover { opacity: 0.82; }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-approve { background: #2d8a4e; color: white; }
+  .btn-reject { background: #8b3a1f; color: white; }
+  .btn-copy { background: #2b3d52; color: #e8d5b0; }
+
+  /* CapCut & Director sections */
+  .capcut-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid #2b3d52; }
+  .section-toggle { background: #2b3d52; color: #e8d5b0; border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-right: 8px; }
+  .section-toggle:hover { background: #3a4d62; }
+  .toggle-notes { display: none; margin-top: 10px; background: #080d12; padding: 12px; border-radius: 7px; font-size: 11px; line-height: 1.65; max-height: 300px; overflow-y: auto; color: #8ab; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-word; }
+  .toggle-notes.open { display: block; }
+
+  .missing-asset { background: #2a1a00; border: 1px solid #c45a2c; border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: 11px; color: #e8a060; }
+
+  /* Shot actions */
+  .shot-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .btn-shot { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 12px; font-weight: 700; transition: opacity 0.15s; }
+  .btn-shot:hover { opacity: 0.82; }
+  .btn-shot:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-shot-approve { background: #2d8a4e; color: white; }
+  .btn-shot-in-post { background: #d4a355; color: #1a2535; }
+  .btn-shot-director { background: #5b8a7a; color: white; }
+
+  /* Toast */
+  .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; font-size: 13px; font-weight: 600; z-index: 1000; transform: translateY(-20px); opacity: 0; transition: all 0.3s; pointer-events: none; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast-success { background: #2d8a4e; color: white; }
+  .toast-error { background: #8b3a1f; color: white; }
+
+  .loading { text-align: center; padding: 60px; color: #5b8a7a; font-size: 14px; }
+  .spinner { border: 3px solid #2b3d52; border-top: 3px solid #c45a2c; border-radius: 50%; width: 32px; height: 32px; animation: spin 0.8s linear infinite; margin: 0 auto 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-state { text-align: center; padding: 60px; color: #5b8a7a; font-size: 14px; }
+  .error-state { background: #2a0a0a; border: 1px solid #8b3a1f; border-radius: 8px; padding: 16px; margin: 20px 0; color: #e8a060; font-size: 13px; }
+
+  @media (max-width: 768px) {
+    body { padding: 16px; }
+    h1 { font-size: 22px; }
+    .video-card { width: 150px; }
+    .controls { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>THE ROOMMATES</h1>
+  <p class="subtitle" id="subtitle">Review Dashboard</p>
+  <div class="controls" id="controls" style="display:none">
+    <select class="song-select" id="song-filter"></select>
+    <div class="summary-bar" id="summary-bar"></div>
+    <button class="btn-download" onclick="downloadApproved()">Download Approved Manifest</button>
+    <button class="btn-refresh" onclick="loadData()">Refresh</button>
+  </div>
+</header>
+
+<div class="filter-bar" id="filter-bar" style="display:none"></div>
+<div id="toast" class="toast"></div>
+<div class="shots-grid" id="grid">
+  <div class="loading"><div class="spinner"></div>Loading shots...</div>
+</div>
+
+<script>
+var API_URL = 'https://xrtyllishxovdpazjdco.supabase.co/functions/v1/review-dashboard';
+var currentFilter = 'all';
+var currentSongId = 'all';
+var allData = { songs: [], shots: [], runs: [] };
+
+// ── Cost rates ──
+var COST_RATES = { kling: 0.028, omnihuman: 0.05 };
+
+function estimateCost(runs) {
+  var total = 0;
+  for (var i = 0; i < runs.length; i++) {
+    var r = runs[i];
+    if (!r.duration_seconds || !r.tool_used) continue;
+    var tool = r.tool_used.toLowerCase();
+    var rate = 0.03;
+    for (var k in COST_RATES) { if (tool.indexOf(k) !== -1) { rate = COST_RATES[k]; break; } }
+    total += r.duration_seconds * rate;
+  }
+  return Math.round(total * 100) / 100;
+}
+
+// ── Helpers ──
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function toast(msg, type) {
+  var el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast toast-' + (type || 'success') + ' show';
+  setTimeout(function() { el.classList.remove('show'); }, 3000);
+}
+
+// ── API ──
+function apiCall(body) {
+  return fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(function(res) {
+    if (!res.ok) return res.json().catch(function() { return {}; }).then(function(e) { throw new Error(e.error || 'Request failed'); });
+    return res.json();
+  });
+}
+
+// ── Load data ──
+function loadData() {
+  document.getElementById('grid').innerHTML = '<div class="loading"><div class="spinner"></div>Loading shots...</div>';
+  fetch(API_URL)
+    .then(function(res) {
+      if (!res.ok) throw new Error('API returned ' + res.status);
+      return res.json();
+    })
+    .then(function(data) {
+      allData = data;
+      renderAll();
+    })
+    .catch(function(err) {
+      document.getElementById('grid').innerHTML = '<div class="error-state">Could not load data: ' + esc(err.message) + '</div>';
+    });
+}
+
+// ── Render ──
+function renderAll() {
+  var songs = allData.songs || [];
+  var shots = allData.shots || [];
+  var runs = allData.runs || [];
+
+  // Build song lookup
+  var songMap = {};
+  for (var i = 0; i < songs.length; i++) songMap[songs[i].id] = songs[i].title;
+
+  // Group runs by production_queue_id
+  var runMap = {};
+  for (var i = 0; i < runs.length; i++) {
+    var r = runs[i];
+    if (!runMap[r.production_queue_id]) runMap[r.production_queue_id] = [];
+    runMap[r.production_queue_id].push(r);
+  }
+
+  // Count statuses
+  var counts = { approved: 0, pending: 0, rejected: 0, in_post: 0, total: shots.length };
+  for (var i = 0; i < shots.length; i++) {
+    var s = shots[i].status;
+    if (s === 'approved') counts.approved++;
+    else if (s === 'rejected') counts.rejected++;
+    else if (s === 'in_post') counts.in_post++;
+    else counts.pending++;
+  }
+
+  // Subtitle
+  var dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  document.getElementById('subtitle').textContent = 'Review Dashboard \u2014 ' + dateStr;
+
+  // Song filter
+  var sel = document.getElementById('song-filter');
+  sel.innerHTML = '<option value="all">All Songs</option>';
+  for (var i = 0; i < songs.length; i++) {
+    sel.innerHTML += '<option value="' + songs[i].id + '">' + esc(songs[i].title) + '</option>';
+  }
+  sel.value = currentSongId;
+  sel.onchange = function() { currentSongId = sel.value; applyFilters(); };
+
+  // Summary
+  document.getElementById('summary-bar').innerHTML =
+    '<div class="summary-item"><span class="summary-dot dot-approved"></span> ' + counts.approved + ' Approved</div>' +
+    '<div class="summary-item"><span class="summary-dot dot-pending"></span> ' + counts.pending + ' Pending</div>' +
+    '<div class="summary-item"><span class="summary-dot dot-in-post"></span> ' + counts.in_post + ' In Post</div>' +
+    '<div class="summary-item"><span class="summary-dot dot-rejected"></span> ' + counts.rejected + ' Rejected</div>';
+
+  // Filter bar
+  var fb = document.getElementById('filter-bar');
+  fb.innerHTML =
+    '<button class="filter-btn' + (currentFilter === 'all' ? ' active' : '') + '" onclick="setFilter(\'all\',this)">All (' + counts.total + ')</button>' +
+    '<button class="filter-btn' + (currentFilter === 'pending' ? ' active' : '') + '" onclick="setFilter(\'pending\',this)">Pending</button>' +
+    '<button class="filter-btn' + (currentFilter === 'approved' ? ' active' : '') + '" onclick="setFilter(\'approved\',this)">Approved</button>' +
+    '<button class="filter-btn' + (currentFilter === 'in_post' ? ' active' : '') + '" onclick="setFilter(\'in_post\',this)">In Post</button>' +
+    '<button class="filter-btn' + (currentFilter === 'rejected' ? ' active' : '') + '" onclick="setFilter(\'rejected\',this)">Rejected</button>';
+
+  // Show controls
+  document.getElementById('controls').style.display = 'flex';
+  fb.style.display = 'flex';
+
+  // Render shot cards
+  if (!shots.length) {
+    document.getElementById('grid').innerHTML = '<div class="empty-state">No shots found in production_queue.</div>';
+    return;
+  }
+
+  var html = '';
+  for (var i = 0; i < shots.length; i++) {
+    var shot = shots[i];
+    var shotRuns = runMap[shot.id] || [];
+    var songTitle = songMap[shot.song_id] || 'Unknown Song';
+    var cost = estimateCost(shotRuns);
+    var dirStatus = shot.director_signoff_status || 'pending';
+    var dirBadge = dirStatus === 'approved' ? 'Director approved' : 'Awaiting director';
+    var capcut = shot.capcut_notes ? JSON.stringify(shot.capcut_notes, null, 2) : 'No CapCut notes yet.';
+    var missingNote = (shot.capcut_notes && shot.capcut_notes.missing_assets_note) || '';
+    var dirSignoff = shot.director_signoff ? JSON.stringify(shot.director_signoff, null, 2) : '';
+    var driveFolderUrl = shot.drive_folder_url || '';
+    var borderClass = (shot.status === 'approved' || shot.status === 'rejected' || shot.status === 'in_post') ? ' border-' + shot.status : '';
+
+    // Video cards
+    var vhtml = '';
+    if (shotRuns.length === 0) {
+      vhtml = '<div style="color:#5b8a7a;font-size:12px;padding:8px">No videos generated yet</div>';
+    } else {
+      for (var j = 0; j < shotRuns.length; j++) {
+        var run = shotRuns[j];
+        vhtml += '<div class="video-card" id="run-' + run.id + '" data-drive-folder-url="' + esc(driveFolderUrl) + '" data-drive-filename="' + esc(run.drive_filename || '') + '">';
+        if (run.video_url) {
+          vhtml += '<video src="' + esc(run.video_url) + '" controls preload="metadata" playsinline onerror="showExpiry(this)"></video>';
+          vhtml += '<div class="expiry-warning">fal link expired \u2014 use Drive copy</div>';
+        } else {
+          vhtml += '<div class="no-video">No video yet</div>';
+        }
+        vhtml += '<div class="char-name">' + esc(run.character_name || 'Unknown') + '</div>';
+        vhtml += '<div class="tool-name">' + esc(run.tool_used || '') + (run.duration_seconds ? ' (' + run.duration_seconds + 's)' : '') + '</div>';
+        vhtml += '<div class="file-name">' + esc(run.drive_filename || '') + '</div>';
+        vhtml += '<div class="btn-row">';
+        vhtml += '<button class="btn btn-approve" onclick="reviewRun(\'' + run.id + '\',\'approve\',this)">Good</button>';
+        vhtml += '<button class="btn btn-reject" onclick="reviewRun(\'' + run.id + '\',\'reject\',this)">Redo</button>';
+        if (run.drive_filename) vhtml += '<button class="btn btn-copy" onclick="copyDriveInfo(this)">Drive URL</button>';
+        vhtml += '</div></div>';
+      }
+    }
+
+    html += '<div class="shot-card' + borderClass + '" data-status="' + shot.status + '" data-song-id="' + (shot.song_id || '') + '" data-shot-id="' + shot.id + '">';
+    html += '<div class="shot-header"><div class="shot-meta">';
+    html += '<span class="shot-name">' + esc(shot.shot_name) + '</span>';
+    html += '<span class="status-badge status-' + shot.status + '">' + shot.status + '</span>';
+    html += '<span class="director-badge director-' + dirStatus + '">' + dirBadge + '</span>';
+    if (cost > 0) html += '<span class="cost-tag">~$' + cost.toFixed(2) + '</span>';
+    html += '</div><div style="display:flex;gap:6px;align-items:center">';
+    if (shot.concept_tag) html += '<span class="concept-tag">' + esc(shot.concept_tag) + '</span>';
+    html += '<span class="song-tag">' + esc(songTitle) + '</span>';
+    html += '</div></div>';
+
+    html += '<div class="videos-row">' + vhtml + '</div>';
+
+    if (missingNote) html += '<div class="missing-asset">' + esc(missingNote) + '</div>';
+
+    // CapCut + Director sections
+    html += '<div class="capcut-section">';
+    html += '<button class="section-toggle" onclick="toggleNext(this)">CapCut Edit Guide</button>';
+    html += '<pre class="toggle-notes">' + esc(capcut) + '</pre>';
+    if (dirSignoff) {
+      html += '<button class="section-toggle" onclick="toggleNext(this)">Director Notes</button>';
+      html += '<pre class="toggle-notes">' + esc(dirSignoff) + '</pre>';
+    }
+    html += '</div>';
+
+    // Shot actions
+    html += '<div class="shot-actions">';
+    html += '<button class="btn-shot btn-shot-approve" onclick="updateShot(\'' + shot.id + '\',\'approved\')"' + (shot.status === 'approved' ? ' disabled' : '') + '>Approve Shot</button>';
+    html += '<button class="btn-shot btn-shot-in-post" onclick="updateShot(\'' + shot.id + '\',\'in_post\')"' + (shot.status === 'in_post' ? ' disabled' : '') + '>Send to Post</button>';
+    if (dirStatus !== 'approved') html += '<button class="btn-shot btn-shot-director" onclick="approveDirector(\'' + shot.id + '\')">Approve Director Signoff</button>';
+    html += '</div></div>';
+  }
+
+  document.getElementById('grid').innerHTML = html;
+  applyFilters();
+}
+
+// ── Filtering ──
+function setFilter(filter, btn) {
+  currentFilter = filter;
+  var btns = document.querySelectorAll('.filter-btn');
+  for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
+  btn.classList.add('active');
+  applyFilters();
+}
+
+function applyFilters() {
+  var pendingStatuses = ['queued', 'generating', 'generated', 'review_pending'];
+  var cards = document.querySelectorAll('.shot-card');
+  for (var i = 0; i < cards.length; i++) {
+    var card = cards[i];
+    var status = card.getAttribute('data-status');
+    var songId = card.getAttribute('data-song-id');
+    var matchesStatus = currentFilter === 'all'
+      || (currentFilter === 'pending' && pendingStatuses.indexOf(status) !== -1)
+      || status === currentFilter;
+    var matchesSong = currentSongId === 'all' || songId === currentSongId;
+    card.style.display = (matchesStatus && matchesSong) ? '' : 'none';
+  }
+}
+
+// ── Actions ──
+function reviewRun(id, action) {
+  var card = document.getElementById('run-' + id);
+  var btns = card.querySelectorAll('.btn');
+  for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+  apiCall({ action: 'review_run', run_id: id, status: action }).then(function() {
+    card.style.borderColor = action === 'approve' ? '#2d8a4e' : '#8b3a1f';
+    toast(action === 'approve' ? 'Run approved' : 'Run marked for redo');
+  }).catch(function(err) {
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
+    toast(err.message, 'error');
+  });
+}
+
+function updateShot(id, status) {
+  apiCall({ action: 'update_shot', shot_id: id, status: status }).then(function() {
+    toast('Shot updated to ' + status);
+    loadData();
+  }).catch(function(err) { toast(err.message, 'error'); });
+}
+
+function approveDirector(id) {
+  apiCall({ action: 'approve_director', shot_id: id }).then(function() {
+    toast('Director signoff approved');
+    loadData();
+  }).catch(function(err) { toast(err.message, 'error'); });
+}
+
+// ── Video expiry ──
+function showExpiry(videoEl) {
+  var warning = videoEl.parentElement.querySelector('.expiry-warning');
+  if (warning) warning.classList.add('show');
+}
+
+// ── Copy Drive URL ──
+function copyDriveInfo(btn) {
+  var card = btn.closest('.video-card');
+  var url = card.getAttribute('data-drive-folder-url');
+  var filename = card.getAttribute('data-drive-filename');
+  var text = url || filename || '';
+  if (!text) { toast('No Drive info available', 'error'); return; }
+  navigator.clipboard.writeText(text).then(
+    function() { toast('Copied: ' + (url ? 'Drive folder URL' : filename)); },
+    function() { toast('Copy failed', 'error'); }
+  );
+}
+
+// ── Toggle sections ──
+function toggleNext(btn) {
+  var el = btn.nextElementSibling;
+  if (el) el.classList.toggle('open');
+}
+
+// ── Download manifest ──
+function downloadApproved() {
+  var cards = document.querySelectorAll('.shot-card[data-status="approved"]');
+  if (!cards.length) { toast('No approved shots', 'error'); return; }
+  var lines = ['APPROVED SHOTS MANIFEST', 'Generated: ' + new Date().toISOString(), ''];
+  for (var i = 0; i < cards.length; i++) {
+    var name = cards[i].querySelector('.shot-name');
+    lines.push((name ? name.textContent : 'Unknown') + ':');
+    var files = cards[i].querySelectorAll('.file-name');
+    for (var j = 0; j < files.length; j++) {
+      if (files[j].textContent) lines.push('  - ' + files[j].textContent);
+    }
+    lines.push('');
+  }
+  var blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'approved-manifest.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Manifest downloaded');
+}
+
+// ── Init ──
+loadData();
+</script>
+</body>
+</html>
