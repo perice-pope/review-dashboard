@@ -1,0 +1,55 @@
+name: Generate Hook Clips
+
+# Shot-driven hook generation. Reads production_queue rows that are missing
+# audio_url, looks up the matching song in Drive, auto-detects section
+# boundaries the first time it sees a song (and persists them), then extracts
+# the right slice for each shot capped at MAX_HOOK_SECONDS.
+#
+# Idempotent — only processes rows where audio_url IS NULL.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # every 10 minutes
+  workflow_dispatch:         # manual trigger from the Actions tab
+
+# Don't overlap runs
+concurrency:
+  group: hooks
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: cloud-hooks
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: cloud-hooks/requirements.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run hook worker
+        env:
+          APPS_SCRIPT_URL:  ${{ secrets.APPS_SCRIPT_URL  }}
+          SUPABASE_URL:     ${{ secrets.SUPABASE_URL     }}
+          SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY     }}
+          INPUT_FOLDER:     ${{ vars.INPUT_FOLDER  || 'Roommates - Full Songs' }}
+          OUTPUT_FOLDER:    ${{ vars.OUTPUT_FOLDER || 'Roommates - Hooks' }}
+          MAX_HOOK_SECONDS: ${{ vars.MAX_HOOK_SECONDS || '15' }}
+        run: python3 hook_worker.py
