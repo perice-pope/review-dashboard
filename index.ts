@@ -61,16 +61,25 @@ async function proposeRevisionWithClaude(
     );
   }
 
-  const systemPrompt =
-    "You are a video-generation prompt engineer for a music video pipeline that uses " +
-    "Runway Gen-4 References. Each shot has a structured runway_prompt (text) and a " +
-    "comma-separated characters_used field. The characters_used field controls which " +
-    "character reference images get sent to Runway — it is NOT just descriptive. If the " +
-    "feedback says the wrong characters appeared, fix characters_used. If the feedback " +
-    "is about motion, lighting, framing, mood, or pacing, edit runway_prompt. Preserve " +
-    "the stylistic intent of the original prompt unless feedback explicitly changes it. " +
-    "Use only character names from the provided valid list. " +
-    "Respond with the propose_revision tool — no prose.";
+  const systemPrompt = [
+    "You are a prompt engineer for the Runway Gen-4 References video model. Your job is to revise a shot's runway_prompt to address reviewer feedback WHILE strictly following Runway's official prompting rules.",
+    "",
+    "RUNWAY GEN-4 PROMPTING RULES (CRITICAL — apply these even when the feedback doesn't mention them):",
+    "",
+    "1. REFERENCES HANDLE IDENTITY. Each @-tagged character has a reference image that defines face, hair, build, age, clothing, and accessories. The PROMPT MUST NOT redescribe any of these. Forbidden in the prompt text: hair color, hair style, age, build, race, clothing item, clothing color, accessories, facial features, jewelry. If the prior prompt contains any of these, STRIP them out — this is opportunistic cleanup you do every time, not just when the feedback asks for it.",
+    "",
+    "2. PROMPTS HANDLE ACTION + ENVIRONMENT + CAMERA + MOOD. Keep only what describes what the characters DO (verbs, motion, gestures), WHERE they are (location, lighting, atmosphere, weather), how the CAMERA moves (push, pull, pan, eye level, framing, lens), and what the scene FEELS like (mood, audio cues that drive action).",
+    "",
+    "3. PRESERVE EXPLICIT NEGATIVE-PROMPT INSTRUCTIONS. Phrases like 'no breath vapor', 'no eye contact', 'NOT choreography', 'NOT 3D', 'do not show X' are deliberate constraints, often added in response to prior reviewer feedback. KEEP them intact — negative guidance is NOT bloat.",
+    "",
+    "4. KEEP IT REASONABLY CONCISE. Cut decorative redundancy, but never at the cost of Rule 3 caveats. There is no hard length limit — clarity beats brevity.",
+    "",
+    "5. CHARACTERS ARE @-TAGGED. Format: @Name (e.g. @Noah). The reference image bound to that name supplies their look. Just say what @Name does — never describe how they look.",
+    "",
+    "6. PRESERVE the global visual-style line if present (e.g. 'Roommates visual style: warm flat illustration, subtle gradients...') — that is rendering style, not character identity. Keep it intact.",
+    "",
+    "Use only character names from the provided valid list. Respond via the propose_revision tool. In the rationale, briefly note (a) what feedback you addressed and (b) what Rule 1 cleanup you performed.",
+  ].join("\n");
 
   const userMessage = [
     `SHOT NAME: ${shot.shot_name ?? ""}`,
@@ -83,7 +92,7 @@ async function proposeRevisionWithClaude(
     "REVIEWER FEEDBACK ON THE PRIOR TAKE:",
     feedback,
     "",
-    "Propose updated runway_prompt and characters_used to address the feedback.",
+    "Propose an updated runway_prompt and characters_used. Address the feedback, AND strip any Rule-1 identity descriptors you find in the current prompt.",
   ].join("\n");
 
   const tool = {
