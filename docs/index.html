@@ -93,6 +93,32 @@
   .btn-reject { background: #8b3a1f; color: white; }
   .btn-copy { background: #2b3d52; color: #e8d5b0; }
 
+  .feedback-input { width: 100%; margin-top: 6px; padding: 6px 8px; background: #080d12; color: #e8d5b0; border: 1px solid #2b3d52; border-radius: 5px; font-size: 11px; font-family: inherit; resize: vertical; min-height: 38px; }
+  .feedback-input:focus { border-color: #c45a2c; outline: none; }
+  .feedback-input::placeholder { color: #5b8a7a; font-style: italic; }
+
+  /* Revision modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 2000; align-items: center; justify-content: center; padding: 20px; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: #1a2535; border: 1px solid #5b8a7a; border-radius: 12px; padding: 22px; max-width: 720px; width: 100%; max-height: 90vh; overflow-y: auto; }
+  .modal h2 { color: #c45a2c; font-size: 18px; margin-bottom: 4px; }
+  .modal .modal-subtitle { color: #5b8a7a; font-size: 12px; margin-bottom: 16px; }
+  .modal-field { margin-bottom: 14px; }
+  .modal-field-label { font-size: 11px; color: #d4a355; font-weight: 700; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .modal-field-old { background: #2a0a0a; border: 1px solid #5a1a1a; padding: 8px 10px; border-radius: 5px; font-size: 12px; color: #c89a8a; white-space: pre-wrap; word-break: break-word; margin-bottom: 4px; font-family: 'Courier New', monospace; line-height: 1.5; }
+  .modal-field-new { background: #0a2a0a; border: 1px solid #1a5a2a; padding: 8px 10px; border-radius: 5px; font-size: 12px; color: #b0e8b0; white-space: pre-wrap; word-break: break-word; font-family: 'Courier New', monospace; line-height: 1.5; }
+  .modal-field-edit { width: 100%; background: #080d12; color: #e8d5b0; border: 1px solid #5b8a7a; padding: 8px 10px; border-radius: 5px; font-size: 12px; font-family: 'Courier New', monospace; resize: vertical; min-height: 80px; }
+  .modal-rationale { background: #0a1a2a; border: 1px solid #2b5d82; padding: 10px 12px; border-radius: 5px; font-size: 12px; color: #a0c8e8; line-height: 1.55; }
+  .modal-feedback { background: #2a1a00; border: 1px solid #c45a2c; padding: 10px 12px; border-radius: 5px; font-size: 12px; color: #e8a060; line-height: 1.55; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; flex-wrap: wrap; }
+  .modal-btn { padding: 9px 18px; border-radius: 6px; border: none; cursor: pointer; font-size: 12px; font-weight: 700; transition: opacity 0.15s; }
+  .modal-btn:hover { opacity: 0.85; }
+  .modal-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .modal-btn-apply { background: #2d8a4e; color: white; }
+  .modal-btn-edit { background: #5b8a7a; color: white; }
+  .modal-btn-cancel { background: #2b3d52; color: #e8d5b0; }
+  .modal-loading { text-align: center; padding: 30px; color: #5b8a7a; font-size: 13px; }
+
   /* CapCut & Director sections */
   .capcut-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid #2b3d52; }
   .section-toggle { background: #2b3d52; color: #e8d5b0; border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-right: 8px; }
@@ -147,6 +173,13 @@
 
 <div class="filter-bar" id="filter-bar" style="display:none"></div>
 <div id="toast" class="toast"></div>
+
+<div class="modal-overlay" id="revision-modal">
+  <div class="modal" id="revision-modal-body">
+    <div class="modal-loading"><div class="spinner"></div>Asking Claude for a revision proposal…</div>
+  </div>
+</div>
+
 <div class="shots-grid" id="grid">
   <div class="loading"><div class="spinner"></div>Loading shots...</div>
 </div>
@@ -314,6 +347,7 @@ function renderAll() {
         vhtml += '<div class="char-name">' + esc(run.character_name || 'Unknown') + '</div>';
         vhtml += '<div class="tool-name">' + esc(run.tool_used || '') + (run.duration_seconds ? ' (' + run.duration_seconds + 's)' : '') + '</div>';
         vhtml += '<div class="file-name">' + esc(run.drive_filename || '') + '</div>';
+        vhtml += '<textarea class="feedback-input" id="feedback-' + run.id + '" placeholder="Feedback for Redo (e.g. \'use the right character assets\')" rows="2"></textarea>';
         vhtml += '<div class="btn-row">';
         vhtml += '<button class="btn btn-approve" onclick="reviewRun(\'' + run.id + '\',\'approve\',this)">Good</button>';
         vhtml += '<button class="btn btn-reject" onclick="reviewRun(\'' + run.id + '\',\'reject\',this)">Redo</button>';
@@ -395,13 +429,117 @@ function applyFilters() {
 function reviewRun(id, action) {
   var card = document.getElementById('run-' + id);
   var btns = card.querySelectorAll('.btn');
+
+  if (action === 'reject') {
+    var fbEl = document.getElementById('feedback-' + id);
+    var feedback = fbEl ? fbEl.value.trim() : '';
+
+    if (!feedback) {
+      if (!confirm('Redo with no feedback? Runway will re-render with the same prompt and likely produce the same result. Type feedback above for an AI-revised prompt.')) {
+        return;
+      }
+      for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+      apiCall({ action: 'review_run', run_id: id, status: 'reject' }).then(function() {
+        card.style.borderColor = '#8b3a1f';
+        toast('Run marked for redo (no feedback)');
+      }).catch(function(err) {
+        for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
+        toast(err.message, 'error');
+      });
+      return;
+    }
+
+    requestRevision(id, feedback, btns);
+    return;
+  }
+
   for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
-  apiCall({ action: 'review_run', run_id: id, status: action }).then(function() {
-    card.style.borderColor = action === 'approve' ? '#2d8a4e' : '#8b3a1f';
-    toast(action === 'approve' ? 'Run approved' : 'Run marked for redo');
+  apiCall({ action: 'review_run', run_id: id, status: 'approve' }).then(function() {
+    card.style.borderColor = '#2d8a4e';
+    toast('Run approved');
   }).catch(function(err) {
     for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
     toast(err.message, 'error');
+  });
+}
+
+// ── AI revision flow ──
+function requestRevision(runId, feedback, cardBtns) {
+  for (var i = 0; i < cardBtns.length; i++) cardBtns[i].disabled = true;
+  openModalLoading();
+  apiCall({ action: 'request_revision', run_id: runId, feedback: feedback })
+    .then(function(resp) {
+      renderRevisionModal(resp);
+    })
+    .catch(function(err) {
+      closeModal();
+      for (var i = 0; i < cardBtns.length; i++) cardBtns[i].disabled = false;
+      toast('Revision proposal failed: ' + err.message, 'error');
+    });
+}
+
+function openModalLoading() {
+  document.getElementById('revision-modal-body').innerHTML =
+    '<div class="modal-loading"><div class="spinner"></div>Asking Claude for a revision proposal…</div>';
+  document.getElementById('revision-modal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('revision-modal').classList.remove('open');
+}
+
+function renderRevisionModal(resp) {
+  var body = document.getElementById('revision-modal-body');
+  var current = resp.current || {};
+  var proposed = resp.proposed || {};
+  var html = '';
+  html += '<h2>AI Revision Proposal</h2>';
+  html += '<div class="modal-subtitle">Claude has proposed updated fields. Review the diff before applying.</div>';
+
+  html += '<div class="modal-field"><div class="modal-field-label">Your Feedback</div>';
+  html += '<div class="modal-feedback">' + esc(resp.feedback || '') + '</div></div>';
+
+  html += '<div class="modal-field"><div class="modal-field-label">runway_prompt — current</div>';
+  html += '<div class="modal-field-old">' + esc(current.runway_prompt || '(empty)') + '</div>';
+  html += '<div class="modal-field-label">runway_prompt — proposed</div>';
+  html += '<textarea class="modal-field-edit" id="modal-prompt" rows="6">' + esc(proposed.runway_prompt || '') + '</textarea></div>';
+
+  html += '<div class="modal-field"><div class="modal-field-label">characters_used — current</div>';
+  html += '<div class="modal-field-old">' + esc(current.characters_used || '(empty)') + '</div>';
+  html += '<div class="modal-field-label">characters_used — proposed</div>';
+  html += '<input class="modal-field-edit" id="modal-characters" style="min-height:auto" value="' + esc(proposed.characters_used || '') + '"></div>';
+
+  html += '<div class="modal-field"><div class="modal-field-label">Rationale</div>';
+  html += '<div class="modal-rationale">' + esc(proposed.rationale || '') + '</div></div>';
+
+  html += '<div class="modal-actions">';
+  html += '<button class="modal-btn modal-btn-cancel" onclick="closeModal()">Cancel</button>';
+  html += '<button class="modal-btn modal-btn-apply" id="modal-apply-btn" onclick="applyRevision(\'' + resp.shot_id + '\',\'' + resp.run_id + '\',\'' + esc(resp.feedback || '').replace(/\\/g,"\\\\").replace(/'/g,"\\'") + '\')">Apply &amp; Resubmit</button>';
+  html += '</div>';
+
+  body.innerHTML = html;
+}
+
+function applyRevision(shotId, runId, feedback) {
+  var promptEl = document.getElementById('modal-prompt');
+  var charsEl  = document.getElementById('modal-characters');
+  var btn = document.getElementById('modal-apply-btn');
+  if (btn) btn.disabled = true;
+
+  apiCall({
+    action: 'apply_revision',
+    shot_id: shotId,
+    run_id: runId,
+    runway_prompt: promptEl.value,
+    characters_used: charsEl.value,
+    feedback: feedback
+  }).then(function() {
+    closeModal();
+    toast('Revision applied — shot queued for re-render');
+    loadData();
+  }).catch(function(err) {
+    if (btn) btn.disabled = false;
+    toast('Apply failed: ' + err.message, 'error');
   });
 }
 

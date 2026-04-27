@@ -3,6 +3,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") || "";
 const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const corsHeaders: Record<string, string> = {
@@ -40,6 +41,128 @@ async function getDashboardData() {
   };
 }
 
+/* ── Claude revision helper ──────────────────────────────────────── */
+
+type ProposedRevision = {
+  runway_prompt: string;
+  characters_used: string;
+  rationale: string;
+};
+
+async function proposeRevisionWithClaude(
+  shot: Record<string, unknown>,
+  run: Record<string, unknown>,
+  feedback: string,
+  validCharacters: string[],
+): Promise<ProposedRevision> {
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error(
+      "ANTHROPIC_API_KEY not set in edge function secrets — cannot propose revision",
+    );
+  }
+
+  const systemPrompt =
+    "You are a video-generation prompt engineer for a music video pipeline that uses " +
+    "Runway Gen-4 References. Each shot has a structured runway_prompt (text) and a " +
+    "comma-separated characters_used field. The characters_used field controls which " +
+    "character reference images get sent to Runway — it is NOT just descriptive. If the " +
+    "feedback says the wrong characters appeared, fix characters_used. If the feedback " +
+    "is about motion, lighting, framing, mood, or pacing, edit runway_prompt. Preserve " +
+    "the stylistic intent of the original prompt unless feedback explicitly changes it. " +
+    "Use only character names from the provided valid list. " +
+    "Respond with the propose_revision tool — no prose.";
+
+  const userMessage = [
+    `SHOT NAME: ${shot.shot_name ?? ""}`,
+    `CURRENT runway_prompt:\n${shot.runway_prompt ?? ""}`,
+    `CURRENT characters_used: ${shot.characters_used ?? ""}`,
+    `VALID CHARACTER NAMES: ${validCharacters.join(", ")}`,
+    `PRIOR TAKE'S character_name field: ${run.character_name ?? "(unknown)"}`,
+    `PRIOR TAKE'S drive_filename: ${run.drive_filename ?? "(unknown)"}`,
+    "",
+    "REVIEWER FEEDBACK ON THE PRIOR TAKE:",
+    feedback,
+    "",
+    "Propose updated runway_prompt and characters_used to address the feedback.",
+  ].join("\n");
+
+  const tool = {
+    name: "propose_revision",
+    description:
+      "Submit the proposed updates for the shot's runway_prompt and characters_used.",
+    input_schema: {
+      type: "object",
+      properties: {
+        runway_prompt: {
+          type: "string",
+          description:
+            "The full updated prompt to send to Runway. Include all context — this replaces the prior prompt, it does not append.",
+        },
+        characters_used: {
+          type: "string",
+          description:
+            "Comma-separated character names. Must be drawn from the valid list.",
+        },
+        rationale: {
+          type: "string",
+          description:
+            "1-3 sentences describing what you changed and why, addressing the feedback.",
+        },
+      },
+      required: ["runway_prompt", "characters_used", "rationale"],
+    },
+  };
+
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      system: systemPrompt,
+      tools: [tool],
+      tool_choice: { type: "tool", name: "propose_revision" },
+      messages: [{ role: "user", content: userMessage }],
+    }),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Anthropic API ${resp.status}: ${errText}`);
+  }
+
+  const result = await resp.json();
+  const block = (result.content || []).find((b: { type: string }) =>
+    b.type === "tool_use"
+  );
+  if (!block || !block.input) {
+    throw new Error("Claude did not return a tool_use block");
+  }
+  return block.input as ProposedRevision;
+}
+
+async function fetchValidCharacters(): Promise<string[]> {
+  const { data, error } = await client
+    .from("production_queue")
+    .select("characters_used")
+    .not("characters_used", "is", null);
+  if (error) throw error;
+  const set = new Set<string>();
+  for (const row of data || []) {
+    const raw = (row as { characters_used: string | null }).characters_used;
+    if (!raw) continue;
+    for (const name of raw.split(",")) {
+      const trimmed = name.trim();
+      if (trimmed) set.add(trimmed);
+    }
+  }
+  return Array.from(set).sort();
+}
+
 /* ── POST: handle actions ────────────────────────────────────────── */
 
 async function handleAction(body: Record<string, unknown>) {
@@ -54,7 +177,7 @@ async function handleAction(body: Record<string, unknown>) {
         .update(updates)
         .eq("id", body.run_id as string);
       if (error) throw error;
-      break;
+      return { success: true };
     }
     case "update_shot": {
       const { error } = await client
@@ -65,7 +188,7 @@ async function handleAction(body: Record<string, unknown>) {
         })
         .eq("id", body.shot_id as string);
       if (error) throw error;
-      break;
+      return { success: true };
     }
     case "approve_director": {
       const { error } = await client
@@ -76,7 +199,7 @@ async function handleAction(body: Record<string, unknown>) {
         })
         .eq("id", body.shot_id as string);
       if (error) throw error;
-      break;
+      return { success: true };
     }
     case "change_status": {
       const allowed = ["queued", "generating", "generated", "review_pending", "revision_needed", "approved", "rejected", "in_assembly", "in_post", "final_review", "complete", "shipped"];
@@ -87,7 +210,91 @@ async function handleAction(body: Record<string, unknown>) {
         .update({ status: newStatus, updated_at: new Date().toISOString() })
         .eq("id", body.shot_id as string);
       if (error) throw error;
-      break;
+      return { success: true };
+    }
+    case "request_revision": {
+      const runId = body.run_id as string;
+      const feedback = (body.feedback as string || "").trim();
+      if (!runId) throw new Error("run_id required");
+      if (!feedback) throw new Error("feedback required");
+
+      const { data: run, error: runErr } = await client
+        .from("generation_runs")
+        .select("*")
+        .eq("id", runId)
+        .single();
+      if (runErr) throw runErr;
+      if (!run) throw new Error("Run not found");
+
+      const shotId = (run as { production_queue_id: string }).production_queue_id;
+      const { data: shot, error: shotErr } = await client
+        .from("production_queue")
+        .select("*")
+        .eq("id", shotId)
+        .single();
+      if (shotErr) throw shotErr;
+      if (!shot) throw new Error("Shot not found");
+
+      const validCharacters = await fetchValidCharacters();
+      const proposal = await proposeRevisionWithClaude(
+        shot as Record<string, unknown>,
+        run as Record<string, unknown>,
+        feedback,
+        validCharacters,
+      );
+
+      return {
+        success: true,
+        shot_id: shotId,
+        run_id: runId,
+        feedback,
+        current: {
+          runway_prompt: (shot as { runway_prompt: string | null }).runway_prompt || "",
+          characters_used: (shot as { characters_used: string | null }).characters_used || "",
+        },
+        proposed: proposal,
+      };
+    }
+    case "apply_revision": {
+      const shotId = body.shot_id as string;
+      const runId = body.run_id as string;
+      const newPrompt = body.runway_prompt as string;
+      const newCharacters = body.characters_used as string;
+      const feedback = (body.feedback as string) || "";
+      if (!shotId || !runId) throw new Error("shot_id and run_id required");
+
+      const { data: shot, error: shotErr } = await client
+        .from("production_queue")
+        .select("runway_prompt, characters_used")
+        .eq("id", shotId)
+        .single();
+      if (shotErr) throw shotErr;
+
+      const { error: updErr } = await client
+        .from("production_queue")
+        .update({
+          runway_prompt: newPrompt,
+          characters_used: newCharacters,
+          previous_runway_prompt: (shot as { runway_prompt: string | null }).runway_prompt,
+          previous_characters_used: (shot as { characters_used: string | null }).characters_used,
+          reviewer_feedback: feedback,
+          status: "revision_needed",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", shotId);
+      if (updErr) throw updErr;
+
+      const { error: runErr } = await client
+        .from("generation_runs")
+        .update({
+          fal_status: "failed",
+          error_message: "Rejected in review (AI revision queued)",
+          reviewer_feedback: feedback,
+        })
+        .eq("id", runId);
+      if (runErr) throw runErr;
+
+      return { success: true };
     }
     default:
       throw new Error(`Unknown action: ${body.action}`);
@@ -109,8 +316,8 @@ Deno.serve(async (req: Request) => {
 
     if (req.method === "POST") {
       const body = await req.json();
-      await handleAction(body);
-      return json({ success: true });
+      const result = await handleAction(body);
+      return json(result);
     }
 
     return json({ error: "Method not allowed" }, 405);
