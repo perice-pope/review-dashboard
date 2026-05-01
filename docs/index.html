@@ -27,6 +27,26 @@
   .dot-rejected { background: #8b3a1f; }
   .dot-in-post { background: #5b8a7a; }
   .dot-revision { background: #c45a2c; }
+  .dot-needs-keyframe { background: #b87333; }
+
+  /* Compose Keyframe card (status=needs_keyframe) */
+  .compose-card { background: #1a1410; border: 1px dashed #b87333; border-radius: 10px; padding: 16px; margin-top: 8px; max-width: 680px; }
+  .compose-card h3 { color: #e8a060; font-size: 13px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.6px; }
+  .compose-card .compose-hint { color: #a08066; font-size: 12px; margin-bottom: 12px; line-height: 1.55; }
+  .compose-card .compose-section-label { font-size: 10px; color: #d4a355; font-weight: 700; margin: 12px 0 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .compose-card .compose-prompt { background: #080503; border: 1px solid #4a3520; padding: 9px 11px; border-radius: 5px; font-size: 11px; color: #d8b890; font-family: 'Courier New', monospace; line-height: 1.55; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto; }
+  .compose-card .compose-meta { font-size: 11px; color: #8a7060; }
+  .compose-card .compose-meta b { color: #d4a355; }
+  .compose-card .compose-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .compose-card input.compose-input { flex: 1; min-width: 240px; background: #080503; color: #e8d5b0; border: 1px solid #4a3520; padding: 8px 10px; border-radius: 5px; font-size: 11px; font-family: 'Courier New', monospace; }
+  .compose-card input.compose-input:focus { border-color: #b87333; outline: none; }
+  .compose-card .btn-runway { background: #b87333; color: #1a1410; border: none; padding: 8px 14px; border-radius: 5px; font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; }
+  .compose-card .btn-runway:hover { opacity: 0.85; }
+  .compose-card .btn-copy { background: #4a3520; color: #e8d5b0; border: none; padding: 6px 12px; border-radius: 5px; font-size: 11px; font-weight: 700; cursor: pointer; }
+  .compose-card .btn-copy:hover { background: #5a4530; }
+  .compose-card .btn-apply { background: #2d8a4e; color: white; border: none; padding: 8px 14px; border-radius: 5px; font-size: 11px; font-weight: 700; cursor: pointer; }
+  .compose-card .btn-apply:hover { opacity: 0.85; }
+  .compose-card .btn-apply:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .btn-download { background: #2b3d52; color: #e8d5b0; border: 1px solid #5b8a7a; padding: 8px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600; transition: background 0.2s; }
   .btn-download:hover { background: #3a4d62; }
@@ -67,6 +87,7 @@
   .status-rejected, .status-failed { background: #8b3a1f; color: white; }
   .status-in_post, .status-in_assembly { background: #d4a355; color: #1a2535; }
   .status-revision_needed { background: #c45a2c; color: white; }
+  .status-needs_keyframe { background: #b87333; color: white; }
   .status-final_review { background: #5b8a7a; color: white; }
   .status-complete, .status-shipped { background: #1a5a2a; color: white; }
 
@@ -266,13 +287,14 @@ function renderAll() {
   }
 
   // Count statuses
-  var counts = { approved: 0, pending: 0, rejected: 0, in_post: 0, revision_needed: 0, total: shots.length };
+  var counts = { approved: 0, pending: 0, rejected: 0, in_post: 0, revision_needed: 0, needs_keyframe: 0, total: shots.length };
   for (var i = 0; i < shots.length; i++) {
     var s = shots[i].status;
     if (s === 'approved') counts.approved++;
     else if (s === 'rejected') counts.rejected++;
     else if (s === 'in_post' || s === 'in_assembly') counts.in_post++;
     else if (s === 'revision_needed') counts.revision_needed++;
+    else if (s === 'needs_keyframe') counts.needs_keyframe++;
     else counts.pending++;
   }
 
@@ -293,6 +315,7 @@ function renderAll() {
   document.getElementById('summary-bar').innerHTML =
     '<div class="summary-item"><span class="summary-dot dot-approved"></span> ' + counts.approved + ' Approved</div>' +
     '<div class="summary-item"><span class="summary-dot dot-pending"></span> ' + counts.pending + ' Pending</div>' +
+    '<div class="summary-item"><span class="summary-dot dot-needs-keyframe"></span> ' + counts.needs_keyframe + ' Needs Keyframe</div>' +
     '<div class="summary-item"><span class="summary-dot dot-revision"></span> ' + counts.revision_needed + ' Revision</div>' +
     '<div class="summary-item"><span class="summary-dot dot-in-post"></span> ' + counts.in_post + ' In Post</div>' +
     '<div class="summary-item"><span class="summary-dot dot-rejected"></span> ' + counts.rejected + ' Rejected</div>';
@@ -302,6 +325,7 @@ function renderAll() {
   fb.innerHTML =
     '<button class="filter-btn' + (currentFilter === 'all' ? ' active' : '') + '" onclick="setFilter(\'all\',this)">All (' + counts.total + ')</button>' +
     '<button class="filter-btn' + (currentFilter === 'pending' ? ' active' : '') + '" onclick="setFilter(\'pending\',this)">Pending</button>' +
+    '<button class="filter-btn' + (currentFilter === 'needs_keyframe' ? ' active' : '') + '" onclick="setFilter(\'needs_keyframe\',this)">Needs Keyframe</button>' +
     '<button class="filter-btn' + (currentFilter === 'revision_needed' ? ' active' : '') + '" onclick="setFilter(\'revision_needed\',this)">Revision Needed</button>' +
     '<button class="filter-btn' + (currentFilter === 'approved' ? ' active' : '') + '" onclick="setFilter(\'approved\',this)">Approved</button>' +
     '<button class="filter-btn' + (currentFilter === 'in_post' ? ' active' : '') + '" onclick="setFilter(\'in_post\',this)">In Post</button>' +
@@ -369,6 +393,11 @@ function renderAll() {
     html += '<span class="song-tag">' + esc(songTitle) + '</span>';
     html += '</div></div>';
 
+    // Compose-Keyframe card (shows when status=needs_keyframe instead of regenerating)
+    if (shot.status === 'needs_keyframe') {
+      html += renderComposeCard(shot);
+    }
+
     html += '<div class="videos-row">' + vhtml + '</div>';
 
     if (missingNote) html += '<div class="missing-asset">' + esc(missingNote) + '</div>';
@@ -384,8 +413,8 @@ function renderAll() {
     html += '</div>';
 
     // Shot actions — status dropdown + director button
-    var allStatuses = ['queued','generating','generated','review_pending','revision_needed','approved','rejected','in_assembly','in_post','final_review','complete','shipped'];
-    var statusLabels = {queued:'Queued',generating:'Generating',generated:'Generated',review_pending:'Review Pending',revision_needed:'Revision Needed',approved:'Approved',rejected:'Rejected',in_assembly:'In Assembly',in_post:'In Post',final_review:'Final Review',complete:'Complete',shipped:'Shipped'};
+    var allStatuses = ['queued','needs_keyframe','generating','generated','review_pending','revision_needed','approved','rejected','in_assembly','in_post','final_review','complete','shipped'];
+    var statusLabels = {queued:'Queued',needs_keyframe:'Needs Keyframe',generating:'Generating',generated:'Generated',review_pending:'Review Pending',revision_needed:'Revision Needed',approved:'Approved',rejected:'Rejected',in_assembly:'In Assembly',in_post:'In Post',final_review:'Final Review',complete:'Complete',shipped:'Shipped'};
     html += '<div class="shot-actions">';
     html += '<select class="status-select" onchange="changeStatus(\'' + shot.id + '\',this.value)">';
     for (var si = 0; si < allStatuses.length; si++) {
@@ -521,6 +550,9 @@ function renderRevisionModal(resp) {
 
   html += '<div class="modal-actions">';
   html += '<button class="modal-btn modal-btn-cancel" onclick="closeModal()">Cancel</button>';
+  if (current.keyframe_image_url) {
+    html += '<button class="modal-btn modal-btn-edit" onclick="recomposeFromModal(\'' + resp.shot_id + '\')" title="Clears the locked keyframe and forces a new compose pass — use when characters look wrong">Recompose Keyframe</button>';
+  }
   html += '<button class="modal-btn modal-btn-apply" id="modal-apply-btn" onclick="applyRevision(\'' + resp.shot_id + '\',\'' + resp.run_id + '\',\'' + esc(resp.feedback || '').replace(/\\/g,"\\\\").replace(/'/g,"\\'") + '\')">Apply &amp; Resubmit</button>';
   html += '</div>';
 
@@ -569,6 +601,94 @@ function approveDirector(id) {
     toast('Director signoff approved');
     loadData();
   }).catch(function(err) { toast(err.message, 'error'); });
+}
+
+// ── Compose Keyframe card (Path B handoff) ──
+function renderComposeCard(shot) {
+  var prompt = shot.runway_prompt || '';
+  var chars = (shot.characters_used || '').split(',').map(function(s){return s.trim();}).filter(Boolean);
+  var scene = shot.scene_ref || '';
+  var existing = shot.keyframe_image_url || '';
+
+  var html = '<div class="compose-card" data-shot-id="' + shot.id + '">';
+  html += '<h3>Compose Keyframe — ' + chars.length + ' character' + (chars.length===1?'':'s') + ' needed</h3>';
+  html += '<div class="compose-hint">';
+  html += 'This shot needs a hand-composed still so the character refs lock in. ';
+  html += 'Open Runway, paste the prompt, attach <b>' + esc(chars.join(', ') || '(none)') + '</b>';
+  html += (scene ? ' + scene <b>@' + esc(scene) + '</b>' : '');
+  html += ', generate until it looks right (~30s), then drop the file ID below. ';
+  html += 'The runner picks it up and animates it.';
+  html += '</div>';
+
+  html += '<div class="compose-section-label">Prompt (copy into Runway)</div>';
+  html += '<div class="compose-prompt" id="compose-prompt-' + shot.id + '">' + esc(prompt) + '</div>';
+  html += '<div class="compose-row">';
+  html += '<button class="btn-copy" onclick="copyComposePrompt(\'' + shot.id + '\')">Copy prompt</button>';
+  html += '<a class="btn-runway" href="https://app.runwayml.com/" target="_blank" rel="noopener">Open Runway →</a>';
+  html += '</div>';
+
+  html += '<div class="compose-section-label">Keyframe ID or URL</div>';
+  html += '<div class="compose-row">';
+  html += '<input class="compose-input" id="compose-input-' + shot.id + '" ';
+  html += 'placeholder="Drive file ID, https://drive.google.com/..., or runway://upload/..."';
+  if (existing) html += ' value="' + esc(existing) + '"';
+  html += '>';
+  html += '<button class="btn-apply" id="compose-apply-' + shot.id + '" onclick="applyKeyframe(\'' + shot.id + '\',this)">Apply Keyframe</button>';
+  html += '</div>';
+
+  html += '<div class="compose-meta" style="margin-top:10px">';
+  html += '<b>Characters:</b> ' + esc(chars.join(', ') || '(none)');
+  if (scene) html += '  •  <b>Scene:</b> @' + esc(scene);
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function copyComposePrompt(shotId) {
+  var el = document.getElementById('compose-prompt-' + shotId);
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(
+    function(){ toast('Prompt copied'); },
+    function(){ toast('Copy failed', 'error'); }
+  );
+}
+
+function applyKeyframe(shotId, btn) {
+  var input = document.getElementById('compose-input-' + shotId);
+  var val = (input && input.value || '').trim();
+  if (!val) { toast('Paste a Drive file ID or URL first', 'error'); return; }
+  if (btn) btn.disabled = true;
+  apiCall({ action: 'set_keyframe', shot_id: shotId, keyframe_image_url: val })
+    .then(function(resp){
+      if (resp && resp.render_triggered) toast('Keyframe locked — render started, ~3 min');
+      else toast('Keyframe locked — cron will render within 5 min');
+      loadData();
+    })
+    .catch(function(err){
+      if (btn) btn.disabled = false;
+      toast('Apply failed: ' + err.message, 'error');
+    });
+}
+
+function recomposeFromModal(shotId) {
+  if (!confirm('Clear the locked keyframe? This shot will go back to needs_keyframe and you\'ll compose a new still in Runway.')) return;
+  apiCall({ action: 'clear_keyframe', shot_id: shotId })
+    .then(function(){
+      closeModal();
+      toast('Keyframe cleared — see the Compose Keyframe card');
+      loadData();
+    })
+    .catch(function(err){ toast('Recompose failed: ' + err.message, 'error'); });
+}
+
+function recomposeKeyframe(shotId) {
+  if (!confirm('Clear the locked keyframe and recompose? You\'ll need to make a new still in Runway.')) return;
+  apiCall({ action: 'clear_keyframe', shot_id: shotId })
+    .then(function(){
+      toast('Keyframe cleared — compose a new one');
+      loadData();
+    })
+    .catch(function(err){ toast(err.message, 'error'); });
 }
 
 // ── Video expiry ──

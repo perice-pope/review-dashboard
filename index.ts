@@ -278,13 +278,56 @@ async function handleAction(body: Record<string, unknown>) {
       return { success: true };
     }
     case "change_status": {
-      const allowed = ["queued", "generating", "generated", "review_pending", "revision_needed", "approved", "rejected", "in_assembly", "in_post", "final_review", "complete", "shipped"];
+      const allowed = ["queued", "needs_keyframe", "generating", "generated", "review_pending", "revision_needed", "approved", "rejected", "in_assembly", "in_post", "final_review", "complete", "shipped"];
       const newStatus = body.status as string;
       if (!allowed.includes(newStatus)) throw new Error("Invalid status: " + newStatus);
       const { error } = await client
         .from("production_queue")
         .update({ status: newStatus, updated_at: new Date().toISOString() })
         .eq("id", body.shot_id as string);
+      if (error) throw error;
+      return { success: true };
+    }
+    case "set_keyframe": {
+      // Path B handoff: dashboard wrote a keyframe URL/file ID. Save it,
+      // flip status to revision_needed so the runner re-picks the shot,
+      // and instant-trigger the workflow.
+      const shotId = body.shot_id as string;
+      const raw = (body.keyframe_image_url as string || "").trim();
+      if (!shotId) throw new Error("shot_id required");
+      if (!raw) throw new Error("keyframe_image_url required");
+
+      const { error } = await client
+        .from("production_queue")
+        .update({
+          keyframe_image_url: raw,
+          status: "revision_needed",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", shotId);
+      if (error) throw error;
+
+      const dispatch = await triggerRenderWorkflow();
+      return {
+        success: true,
+        render_triggered: dispatch.triggered,
+        render_trigger_reason: dispatch.reason,
+      };
+    }
+    case "clear_keyframe": {
+      // "Recompose" path: clear the locked keyframe and force the shot back
+      // to needs_keyframe so the user picks a new still in Runway.
+      const shotId = body.shot_id as string;
+      if (!shotId) throw new Error("shot_id required");
+
+      const { error } = await client
+        .from("production_queue")
+        .update({
+          keyframe_image_url: null,
+          status: "needs_keyframe",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", shotId);
       if (error) throw error;
       return { success: true };
     }
@@ -332,6 +375,7 @@ async function handleAction(body: Record<string, unknown>) {
           runway_prompt: (shot as { runway_prompt: string | null }).runway_prompt || "",
           characters_used: (shot as { characters_used: string | null }).characters_used || "",
           scene_ref: (shot as { scene_ref: string | null }).scene_ref || "",
+          keyframe_image_url: (shot as { keyframe_image_url: string | null }).keyframe_image_url || "",
         },
         proposed: proposal,
       };

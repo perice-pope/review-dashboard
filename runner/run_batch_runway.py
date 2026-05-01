@@ -271,6 +271,46 @@ def resolve_uri(ref: str) -> str:
     raise ValueError(f"Unsupported ref scheme: {ref}")
 
 
+_DRIVE_ID_PATTERNS = [
+    re.compile(r"drive\.google\.com/file/d/([A-Za-z0-9_-]{20,})"),
+    re.compile(r"drive\.google\.com/open\?id=([A-Za-z0-9_-]{20,})"),
+    re.compile(r"lh3\.googleusercontent\.com/d/([A-Za-z0-9_-]{20,})"),
+]
+
+
+def resolve_keyframe_uri(raw: str) -> str:
+    """
+    Normalize whatever the dashboard wrote into keyframe_image_url to a URI
+    image_to_video can ingest as promptImage.
+
+    Accepts:
+      • Bare Drive file ID (20+ char alphanumeric+-_ string)
+      • https://drive.google.com/file/d/<ID>/view  (and /open?id=)
+      • https://lh3.googleusercontent.com/d/<ID>=...
+      • Any other https:// URL → pass through
+      • runway://upload/<id> → pass through
+      • data:image/...       → pass through
+    """
+    if not raw:
+        raise ValueError("Empty keyframe_image_url")
+    s = raw.strip()
+    # Pass-throughs Runway already accepts
+    if s.startswith("runway://upload/") or s.startswith("data:image/"):
+        return s
+    # Match a Drive URL → extract file ID
+    for pat in _DRIVE_ID_PATTERNS:
+        m = pat.search(s)
+        if m:
+            return f"https://lh3.googleusercontent.com/d/{m.group(1)}=s2048"
+    # Already an HTTPS URL we don't recognize as Drive → pass through
+    if s.startswith("http://") or s.startswith("https://"):
+        return s
+    # Bare-looking Drive file ID
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,}", s):
+        return f"https://lh3.googleusercontent.com/d/{s}=s2048"
+    raise ValueError(f"Unsupported keyframe_image_url shape: {s[:80]}")
+
+
 def extract_at_tags(prompt: str) -> list[str]:
     """All @tag tokens from a prompt, preserving order, deduped, lowercased."""
     seen, out = set(), []
@@ -480,15 +520,53 @@ def image_ratio_for(shot: dict) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Process one shot
+#  Routing — pick the right tool for the shot
+# ─────────────────────────────────────────────────────────────────────────────
+def parse_chars(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def route_shot(shot: dict) -> str:
+    """
+    Route a runway-tool shot to one of three paths:
+
+      "B"             — keyframe locked: animate it as-is. Pixel-perfect identity.
+      "needs_keyframe"— multi-character with no keyframe: human must compose first.
+      "C"             — drift-tolerant auto: text_to_image + image_to_video.
+
+    Path A (omnihuman) is handled by run_batch.py, not this runner.
+    """
+    if (shot.get("keyframe_image_url") or "").strip():
+        return "B"
+    chars = parse_chars(shot.get("characters_used"))
+    if len(chars) > 1:
+        return "needs_keyframe"
+    return "C"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Process one shot — dispatch on routing
 # ─────────────────────────────────────────────────────────────────────────────
 def process_shot(shot: dict) -> None:
     db_id = shot["id"]
     name  = shot.get("shot_name", db_id)
     song  = shot.get("song_title", "Unknown Song")
 
-    print(f"\n[{name}] start — song={song}")
-    update_shot(db_id, status="generating")
+    path = route_shot(shot)
+    print(f"\n[{name}] start — song={song} path={path}")
+
+    if path == "needs_keyframe":
+        chars = parse_chars(shot.get("characters_used"))
+        update_shot(
+            db_id,
+            status       = "needs_keyframe",
+            review_notes = (f"Multi-character shot ({', '.join(chars)}) — compose a keyframe "
+                            f"in Runway, then paste it into the dashboard. No API call made."),
+        )
+        print(f"  → needs_keyframe ({len(chars)} chars: {chars})")
+        return
 
     prompt_raw = shot.get("runway_prompt") or shot.get("final_prompt") or ""
     if not prompt_raw:
@@ -496,7 +574,95 @@ def process_shot(shot: dict) -> None:
         print("  FAILED — runway_prompt is empty")
         return
 
-    # Resolve refs
+    update_shot(db_id, status="generating")
+
+    img_ratio = image_ratio_for(shot)
+    vid_ratio = video_ratio_for(img_ratio)
+    duration  = max(2, min(int(shot.get("duration_seconds") or VIDEO_DURATION), 10))
+    next_version = count_existing_runs(db_id) + 1
+    base_name    = f"{song.replace(' ', '')}_{name.replace(' ', '')}_gen4_v{next_version}"
+    drive_folder = f"{song} - Generated Shots"
+
+    if path == "B":
+        run_path_b(shot, prompt_raw, vid_ratio, duration,
+                   base_name, drive_folder, db_id, next_version)
+    else:
+        run_path_c(shot, prompt_raw, img_ratio, vid_ratio, duration,
+                   base_name, drive_folder, db_id, next_version)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Path B — animate a locked keyframe (no text_to_image)
+# ─────────────────────────────────────────────────────────────────────────────
+def run_path_b(shot: dict, prompt_raw: str, vid_ratio: str, duration: int,
+               base_name: str, drive_folder: str, db_id: str, next_version: int) -> None:
+    """
+    The keyframe was composed by a human in Runway's web UI and dropped into the
+    dashboard. The runner just animates it — character identity is already
+    perfect because the still IS the ground truth.
+    """
+    try:
+        keyframe_uri = resolve_keyframe_uri(shot["keyframe_image_url"])
+    except Exception as e:
+        update_shot(db_id, status="revision_needed",
+                    review_notes=f"keyframe_image_url unusable: {str(e)[:300]}")
+        print(f"  FAILED — bad keyframe_image_url: {e}")
+        return
+
+    # Path B: prompt drives motion only; no character refs needed in the prompt
+    # (the keyframe locks identity). Still pass the prompt through normalization
+    # for tag-casing consistency.
+    refs_for_norm: list[dict] = []  # no refs in this path
+    prompt = normalize_prompt_tags(prompt_raw, refs_for_norm)
+
+    last_err: Exception | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        print(f"  [Path B] attempt {attempt}/{MAX_ATTEMPTS}")
+        try:
+            print(f"    animate: {VIDEO_MODEL} @ {vid_ratio}, {duration}s, "
+                  f"keyframe={keyframe_uri[:80]}…")
+            an_task = submit_animation(keyframe_uri, prompt, vid_ratio, duration)
+            an_result = poll_task(an_task)
+            video_url = first_output(an_result)
+            if not video_url:
+                raise RuntimeError(f"Animation task succeeded but no output URL: {an_result}")
+            print(f"    animate OK → {video_url[:80]}…")
+
+            filename = f"{base_name}.mp4"
+            folder_url = save_to_drive(drive_folder, filename, video_url)
+            update_shot(
+                db_id,
+                status            = "review_pending",
+                asset_url         = video_url,
+                drive_folder_url  = folder_url or shot.get("drive_folder_url"),
+                review_notes      = (f"Path B: locked keyframe → an={an_task[:8]} v{next_version}"),
+                reviewer_feedback = None,
+            )
+            record_generation_run(shot, video_url, filename, folder_url, duration, keyframe_uri)
+            print(f"  DONE → v{next_version} → {video_url[:80]}…")
+            return
+        except Exception as e:
+            last_err = e
+            print(f"  attempt {attempt} failed: {e}")
+            time.sleep(5)
+
+    update_shot(
+        db_id, status="revision_needed",
+        review_notes=f"Path B failed after {MAX_ATTEMPTS} attempts: {str(last_err)[:300]}",
+    )
+    print(f"  FAILED — Path B exhausted")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Path C — text_to_image (with refs as influence) + image_to_video
+# ─────────────────────────────────────────────────────────────────────────────
+def run_path_c(shot: dict, prompt_raw: str, img_ratio: str, vid_ratio: str, duration: int,
+               base_name: str, drive_folder: str, db_id: str, next_version: int) -> None:
+    """
+    Drift-tolerant fallback. Used for 0-1 character shots where identity is not
+    critical (ambient, B-roll, prototyping). Multi-character shots are routed
+    to needs_keyframe instead — see route_shot().
+    """
     try:
         refs, warns = build_reference_images(shot)
     except Exception as e:
@@ -506,26 +672,16 @@ def process_shot(shot: dict) -> None:
         return
     for w in warns:
         print(f"  ⚠  {w}")
-    print(f"  refs ({len(refs)}): {[r['tag'] for r in refs]}")
+    print(f"  [Path C] refs ({len(refs)}): {[r['tag'] for r in refs]}")
 
-    # Normalize @Tag casing in the prompt and warn on unbound refs
     prompt = normalize_prompt_tags(prompt_raw, refs)
     for w in validate_prompt_against_refs(prompt, refs):
         print(f"  ⚠  {w}")
 
-    img_ratio = image_ratio_for(shot)
-    vid_ratio = video_ratio_for(img_ratio)
-    duration  = max(2, min(int(shot.get("duration_seconds") or VIDEO_DURATION), 10))
-
-    next_version = count_existing_runs(db_id) + 1
-    base_name = f"{song.replace(' ', '')}_{name.replace(' ', '')}_gen4_v{next_version}"
-    drive_folder = f"{song} - Generated Shots"
-
     last_err: Exception | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        print(f"  attempt {attempt}/{MAX_ATTEMPTS}")
+        print(f"  [Path C] attempt {attempt}/{MAX_ATTEMPTS}")
         try:
-            # Stage 1 — keyframe
             print(f"    keyframe: {KEYFRAME_MODEL} @ {img_ratio}, refs={[r['tag'] for r in refs]}")
             kf_task = submit_keyframe(prompt, refs, ratio=img_ratio)
             kf_result = poll_task(kf_task)
@@ -534,7 +690,6 @@ def process_shot(shot: dict) -> None:
                 raise RuntimeError(f"Keyframe task succeeded but no output URL: {kf_result}")
             print(f"    keyframe OK → {keyframe_url[:80]}…")
 
-            # Stage 2 — animation
             print(f"    animate:  {VIDEO_MODEL} @ {vid_ratio}, {duration}s")
             an_task = submit_animation(keyframe_url, prompt, vid_ratio, duration)
             an_result = poll_task(an_task)
@@ -543,7 +698,6 @@ def process_shot(shot: dict) -> None:
                 raise RuntimeError(f"Animation task succeeded but no output URL: {an_result}")
             print(f"    animate OK → {video_url[:80]}…")
 
-            # Persist
             filename = f"{base_name}.mp4"
             folder_url = save_to_drive(drive_folder, filename, video_url)
             update_shot(
@@ -551,14 +705,13 @@ def process_shot(shot: dict) -> None:
                 status            = "review_pending",
                 asset_url         = video_url,
                 drive_folder_url  = folder_url or shot.get("drive_folder_url"),
-                review_notes      = (f"Two-stage Gen-4: kf={kf_task[:8]} an={an_task[:8]} "
+                review_notes      = (f"Path C: kf={kf_task[:8]} an={an_task[:8]} "
                                      f"refs=[{','.join(r['tag'] for r in refs)}] v{next_version}"),
                 reviewer_feedback = None,
             )
             record_generation_run(shot, video_url, filename, folder_url, duration, keyframe_url)
             print(f"  DONE → v{next_version} → {video_url[:80]}…")
             return
-
         except Exception as e:
             last_err = e
             print(f"  attempt {attempt} failed: {e}")
@@ -566,9 +719,9 @@ def process_shot(shot: dict) -> None:
 
     update_shot(
         db_id, status="revision_needed",
-        review_notes=f"Two-stage Gen-4 failed after {MAX_ATTEMPTS} attempts: {str(last_err)[:300]}",
+        review_notes=f"Path C failed after {MAX_ATTEMPTS} attempts: {str(last_err)[:300]}",
     )
-    print(f"  FAILED — all attempts exhausted")
+    print(f"  FAILED — Path C exhausted")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -590,8 +743,10 @@ def main() -> None:
         chars_raw = s.get("characters_used") or ""
         chars = [c.strip() for c in chars_raw.split(",") if c.strip()]
         scene = s.get("scene_ref") or "—"
+        path  = route_shot(s)
         print(f"  {i}. {s.get('shot_name', '?'):<32} song={s.get('song_title', '?'):<22} "
-              f"dur={s.get('duration_seconds')}s  chars={len(chars)} ({chars_raw})  scene={scene}")
+              f"dur={s.get('duration_seconds')}s  chars={len(chars)} ({chars_raw})  "
+              f"scene={scene}  path={path}")
 
     if args.all or args.auto:
         selected = shots
