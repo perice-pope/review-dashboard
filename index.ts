@@ -5,6 +5,14 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") || "";
 const DRIVE_WEBAPP_URL = Deno.env.get("DRIVE_WEBAPP_URL") || "";
+
+// GitHub workflow_dispatch — fired after apply_revision so the runner kicks
+// off immediately instead of waiting up to 5 min for the cron tick.
+const GH_DISPATCH_TOKEN = Deno.env.get("GH_DISPATCH_TOKEN") || "";
+const GH_DISPATCH_OWNER = Deno.env.get("GH_DISPATCH_OWNER") || "perice-pope";
+const GH_DISPATCH_REPO = Deno.env.get("GH_DISPATCH_REPO") || "review-dashboard";
+const GH_DISPATCH_WORKFLOW = Deno.env.get("GH_DISPATCH_WORKFLOW") || "render-shots.yml";
+const GH_DISPATCH_REF = Deno.env.get("GH_DISPATCH_REF") || "main";
 const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const corsHeaders: Record<string, string> = {
@@ -167,6 +175,36 @@ async function proposeRevisionWithClaude(
     throw new Error("Claude did not return a tool_use block");
   }
   return block.input as ProposedRevision;
+}
+
+/**
+ * Fire-and-forget GitHub workflow_dispatch. Returns false on failure but never
+ * throws — the user's revision must succeed even if the trigger fails (the
+ * 5-min cron will pick the shot up as a fallback).
+ */
+async function triggerRenderWorkflow(): Promise<{ triggered: boolean; reason?: string }> {
+  if (!GH_DISPATCH_TOKEN) {
+    return { triggered: false, reason: "GH_DISPATCH_TOKEN not set" };
+  }
+  const url = `https://api.github.com/repos/${GH_DISPATCH_OWNER}/${GH_DISPATCH_REPO}` +
+              `/actions/workflows/${GH_DISPATCH_WORKFLOW}/dispatches`;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Accept": "application/vnd.github+json",
+        "Authorization": `Bearer ${GH_DISPATCH_TOKEN}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ref: GH_DISPATCH_REF }),
+    });
+    if (resp.status === 204) return { triggered: true };
+    const text = await resp.text();
+    return { triggered: false, reason: `GitHub returned ${resp.status}: ${text.slice(0, 200)}` };
+  } catch (e) {
+    return { triggered: false, reason: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 async function fetchValidCharacters(): Promise<string[]> {
@@ -339,7 +377,10 @@ async function handleAction(body: Record<string, unknown>) {
         .eq("id", runId);
       if (runErr) throw runErr;
 
-      return { success: true };
+      // Fire-and-forget: kick the renderer immediately so the user doesn't
+      // wait for the 5-min cron tick. If this fails, the cron is the fallback.
+      const dispatch = await triggerRenderWorkflow();
+      return { success: true, render_triggered: dispatch.triggered, render_trigger_reason: dispatch.reason };
     }
     case "refresh_run": {
       // Re-resolve a generation_run's video URL from Drive when the original

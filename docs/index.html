@@ -542,9 +542,14 @@ function applyRevision(shotId, runId, feedback) {
     characters_used: charsEl.value,
     scene_ref: sceneEl ? sceneEl.value : '',
     feedback: feedback
-  }).then(function() {
+  }).then(function(resp) {
     closeModal();
-    toast('Revision applied — shot queued for re-render');
+    if (resp && resp.render_triggered) {
+      toast('Revision applied — render started, ~3 min');
+    } else {
+      var why = resp && resp.render_trigger_reason ? ' (' + resp.render_trigger_reason + ')' : '';
+      toast('Revision applied — cron will pick up within 5 min' + why);
+    }
     loadData();
   }).catch(function(err) {
     if (btn) btn.disabled = false;
