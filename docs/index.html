@@ -82,8 +82,10 @@
   .char-name { font-size: 12px; font-weight: 700; color: #d4a355; }
   .tool-name { font-size: 10px; color: #5b8a7a; margin-top: 1px; }
   .file-name { font-size: 10px; color: #5b8a7a; margin-top: 2px; word-break: break-all; line-height: 1.3; }
-  .expiry-warning { display: none; background: #2a1a00; border: 1px solid #c45a2c; border-radius: 4px; padding: 4px 8px; font-size: 10px; color: #e8a060; margin-top: 4px; }
+  .expiry-warning { display: none; background: #2a1a00; border: 1px solid #c45a2c; border-radius: 4px; padding: 4px 8px; font-size: 10px; color: #e8a060; margin-top: 4px; cursor: pointer; }
   .expiry-warning.show { display: block; }
+  .expiry-warning:hover { background: #3a2810; }
+  .drive-iframe { width: 100%; aspect-ratio: 9/16; border: 0; border-radius: 5px; background: #000; margin-bottom: 7px; display: block; }
 
   .btn-row { display: flex; gap: 4px; margin-top: 7px; flex-wrap: wrap; }
   .btn { padding: 5px 8px; border-radius: 5px; border: none; cursor: pointer; font-size: 10px; font-weight: 700; transition: opacity 0.15s; }
@@ -340,14 +342,14 @@ function renderAll() {
         vhtml += '<div class="video-card" id="run-' + run.id + '" data-drive-folder-url="' + esc(driveFolderUrl) + '" data-drive-filename="' + esc(run.drive_filename || '') + '">';
         if (run.video_url) {
           vhtml += '<video src="' + esc(run.video_url) + '" controls preload="metadata" playsinline onerror="showExpiry(this)"></video>';
-          vhtml += '<div class="expiry-warning">fal link expired \u2014 use Drive copy</div>';
+          vhtml += '<div class="expiry-warning" onclick="refreshRun(\'' + run.id + '\',this)" title="Click to load the Drive copy">fal link expired \u2014 click to load Drive copy</div>';
         } else {
           vhtml += '<div class="no-video">No video yet</div>';
         }
         vhtml += '<div class="char-name">' + esc(run.character_name || 'Unknown') + '</div>';
         vhtml += '<div class="tool-name">' + esc(run.tool_used || '') + (run.duration_seconds ? ' (' + run.duration_seconds + 's)' : '') + '</div>';
         vhtml += '<div class="file-name">' + esc(run.drive_filename || '') + '</div>';
-        vhtml += '<textarea class="feedback-input" id="feedback-' + run.id + '" placeholder="Feedback for Redo (e.g. \'use the right character assets\')" rows="2"></textarea>';
+        vhtml += '<textarea class="feedback-input" id="feedback-' + run.id + '" placeholder="Feedback for Redo (e.g. \'characters look wrong, no smoke from mouth, push in slower\') — Claude will regenerate the keyframe with the character/setting refs and re-animate" rows="2"></textarea>';
         vhtml += '<div class="btn-row">';
         vhtml += '<button class="btn btn-approve" onclick="reviewRun(\'' + run.id + '\',\'approve\',this)">Good</button>';
         vhtml += '<button class="btn btn-reject" onclick="reviewRun(\'' + run.id + '\',\'reject\',this)">Redo</button>';
@@ -494,7 +496,7 @@ function renderRevisionModal(resp) {
   var proposed = resp.proposed || {};
   var html = '';
   html += '<h2>AI Revision Proposal</h2>';
-  html += '<div class="modal-subtitle">Claude has proposed updated fields. Review the diff before applying.</div>';
+  html += '<div class="modal-subtitle">Claude has proposed updated fields. On apply, the runner regenerates a still keyframe (using up to 3 reference images: characters first, then setting if room) and animates it. Review the diff before applying.</div>';
 
   html += '<div class="modal-field"><div class="modal-field-label">Your Feedback</div>';
   html += '<div class="modal-feedback">' + esc(resp.feedback || '') + '</div></div>';
@@ -506,8 +508,13 @@ function renderRevisionModal(resp) {
 
   html += '<div class="modal-field"><div class="modal-field-label">characters_used — current</div>';
   html += '<div class="modal-field-old">' + esc(current.characters_used || '(empty)') + '</div>';
-  html += '<div class="modal-field-label">characters_used — proposed</div>';
+  html += '<div class="modal-field-label">characters_used — proposed (order matters; only first 3 get reference-bound)</div>';
   html += '<input class="modal-field-edit" id="modal-characters" style="min-height:auto" value="' + esc(proposed.characters_used || '') + '"></div>';
+
+  html += '<div class="modal-field"><div class="modal-field-label">scene_ref — current</div>';
+  html += '<div class="modal-field-old">' + esc(current.scene_ref || '(empty)') + '</div>';
+  html += '<div class="modal-field-label">scene_ref — proposed (slug only, e.g. kitchen_morning; leave blank for none)</div>';
+  html += '<input class="modal-field-edit" id="modal-scene" style="min-height:auto" value="' + esc(proposed.scene_ref || '') + '"></div>';
 
   html += '<div class="modal-field"><div class="modal-field-label">Rationale</div>';
   html += '<div class="modal-rationale">' + esc(proposed.rationale || '') + '</div></div>';
@@ -523,6 +530,7 @@ function renderRevisionModal(resp) {
 function applyRevision(shotId, runId, feedback) {
   var promptEl = document.getElementById('modal-prompt');
   var charsEl  = document.getElementById('modal-characters');
+  var sceneEl  = document.getElementById('modal-scene');
   var btn = document.getElementById('modal-apply-btn');
   if (btn) btn.disabled = true;
 
@@ -532,6 +540,7 @@ function applyRevision(shotId, runId, feedback) {
     run_id: runId,
     runway_prompt: promptEl.value,
     characters_used: charsEl.value,
+    scene_ref: sceneEl ? sceneEl.value : '',
     feedback: feedback
   }).then(function() {
     closeModal();
@@ -561,6 +570,28 @@ function approveDirector(id) {
 function showExpiry(videoEl) {
   var warning = videoEl.parentElement.querySelector('.expiry-warning');
   if (warning) warning.classList.add('show');
+}
+
+function refreshRun(runId, warningEl) {
+  warningEl.textContent = 'loading Drive copy…';
+  warningEl.style.pointerEvents = 'none';
+  apiCall({ action: 'refresh_run', run_id: runId }).then(function(resp) {
+    var card = document.getElementById('run-' + runId);
+    var video = card.querySelector('video');
+    if (video) {
+      var iframe = document.createElement('iframe');
+      iframe.src = resp.preview_url;
+      iframe.className = 'drive-iframe';
+      iframe.allow = 'autoplay';
+      video.replaceWith(iframe);
+    }
+    warningEl.remove();
+    toast('Loaded from Drive');
+  }).catch(function(err) {
+    warningEl.textContent = 'refresh failed: ' + err.message;
+    warningEl.style.pointerEvents = 'auto';
+    toast(err.message, 'error');
+  });
 }
 
 // ── Copy Drive URL ──

@@ -1,4 +1,6 @@
 .claude/
 .env
 supabase/.temp/
+runner/__pycache__/
+runner/.env
 

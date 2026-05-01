@@ -4,6 +4,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") || "";
+const DRIVE_WEBAPP_URL = Deno.env.get("DRIVE_WEBAPP_URL") || "";
 const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const corsHeaders: Record<string, string> = {
@@ -46,6 +47,7 @@ async function getDashboardData() {
 type ProposedRevision = {
   runway_prompt: string;
   characters_used: string;
+  scene_ref: string;
   rationale: string;
 };
 
@@ -54,6 +56,7 @@ async function proposeRevisionWithClaude(
   run: Record<string, unknown>,
   feedback: string,
   validCharacters: string[],
+  validScenes: string[],
 ): Promise<ProposedRevision> {
   if (!ANTHROPIC_API_KEY) {
     throw new Error(
@@ -62,63 +65,75 @@ async function proposeRevisionWithClaude(
   }
 
   const systemPrompt = [
-    "You are a prompt engineer for the Runway Gen-4 References video model. Your job is to revise a shot's runway_prompt to address reviewer feedback WHILE strictly following Runway's official prompting rules.",
+    "You are a prompt engineer for the Roommates pipeline that runs Runway Gen-4 References as a TWO-STAGE call: (1) text_to_image with referenceImages → still keyframe, (2) image_to_video to animate. The same prompt drives both stages, so it must work as both a still composition AND a motion description.",
     "",
-    "RUNWAY GEN-4 PROMPTING RULES (CRITICAL — apply these even when the feedback doesn't mention them):",
+    "REFERENCE IMAGE BUDGET: 3 per call, hard limit. Characters first, then ONE scene reference if there is room. If a shot needs more than 3 character refs, only the first 3 (in characters_used order) get bound — the rest fall back to the prompt only.",
     "",
-    "1. REFERENCES HANDLE IDENTITY. Each @-tagged character has a reference image that defines face, hair, build, age, clothing, and accessories. The PROMPT MUST NOT redescribe any of these. Forbidden in the prompt text: hair color, hair style, age, build, race, clothing item, clothing color, accessories, facial features, jewelry. If the prior prompt contains any of these, STRIP them out — this is opportunistic cleanup you do every time, not just when the feedback asks for it.",
+    "RUNWAY GEN-4 PROMPTING RULES (apply these even when the feedback doesn't mention them):",
     "",
-    "2. PROMPTS HANDLE ACTION + ENVIRONMENT + CAMERA + MOOD. Keep only what describes what the characters DO (verbs, motion, gestures), WHERE they are (location, lighting, atmosphere, weather), how the CAMERA moves (push, pull, pan, eye level, framing, lens), and what the scene FEELS like (mood, audio cues that drive action).",
+    "1. REFERENCES HANDLE IDENTITY. Each @-tagged character has a reference image that defines face, hair, build, age, clothing, accessories. The PROMPT MUST NOT redescribe any of these. Forbidden: hair color/style, age, build, race, clothing item, clothing color, accessories, facial features, jewelry. If the prior prompt contains any of these, STRIP them — opportunistic cleanup every time.",
     "",
-    "3. PRESERVE EXPLICIT NEGATIVE-PROMPT INSTRUCTIONS. Phrases like 'no breath vapor', 'no eye contact', 'NOT choreography', 'NOT 3D', 'do not show X' are deliberate constraints, often added in response to prior reviewer feedback. KEEP them intact — negative guidance is NOT bloat.",
+    "2. PROMPTS HANDLE ACTION + ENVIRONMENT + CAMERA + MOOD. Keep what characters DO, WHERE they are, how the CAMERA moves, and what the scene FEELS like. Audio cues that drive action are fine.",
     "",
-    "4. KEEP IT REASONABLY CONCISE. Cut decorative redundancy, but never at the cost of Rule 3 caveats. There is no hard length limit — clarity beats brevity.",
+    "3. PRESERVE EXPLICIT NEGATIVE-PROMPT INSTRUCTIONS. Phrases like 'no breath vapor', 'no eye contact', 'NOT choreography', 'NOT 3D', 'do not show X' are deliberate constraints from prior reviewer feedback. KEEP them intact — negative guidance is NOT bloat.",
     "",
-    "5. CHARACTERS ARE @-TAGGED. Format: @Name (e.g. @Noah). The reference image bound to that name supplies their look. Just say what @Name does — never describe how they look.",
+    "4. KEEP IT TIGHT. Aim for under ~600 characters. Cut decorative redundancy. Never sacrifice Rule 3 caveats.",
     "",
-    "6. PRESERVE the global visual-style line if present (e.g. 'Roommates visual style: warm flat illustration, subtle gradients...') — that is rendering style, not character identity. Keep it intact.",
+    "5. CHARACTERS ARE @-TAGGED. Format: @Name. The reference image bound to that name supplies the look. Every character in characters_used MUST appear as @Name somewhere in the prompt — otherwise the reference is wasted.",
     "",
-    "Use only character names from the provided valid list. Respond via the propose_revision tool. In the rationale, briefly note (a) what feedback you addressed and (b) what Rule 1 cleanup you performed.",
+    "6. SCENES CAN BE @-TAGGED TOO. If scene_ref is set (e.g. scene_ref='kitchen_morning'), reference it in the prompt as @kitchen_morning (verbatim slug). The setting image will be bound. If scene_ref is empty, describe the location in plain prose instead.",
+    "",
+    "7. PRESERVE the global visual-style line if present ('Roommates visual style: warm flat illustration, subtle gradients...') — that is rendering style, not identity.",
+    "",
+    "Pick characters_used and scene_ref ONLY from the provided valid lists. Respond via the propose_revision tool. In the rationale, briefly note (a) what feedback you addressed and (b) what Rule 1 cleanup you did.",
   ].join("\n");
 
   const userMessage = [
     `SHOT NAME: ${shot.shot_name ?? ""}`,
     `CURRENT runway_prompt:\n${shot.runway_prompt ?? ""}`,
     `CURRENT characters_used: ${shot.characters_used ?? ""}`,
+    `CURRENT scene_ref: ${shot.scene_ref ?? "(empty)"}`,
+    `LOCATION (free text): ${shot.location ?? ""}`,
     `VALID CHARACTER NAMES: ${validCharacters.join(", ")}`,
+    `VALID SCENE TAGS: ${validScenes.length ? validScenes.join(", ") : "(none registered yet — leave scene_ref empty)"}`,
     `PRIOR TAKE'S character_name field: ${run.character_name ?? "(unknown)"}`,
     `PRIOR TAKE'S drive_filename: ${run.drive_filename ?? "(unknown)"}`,
     "",
     "REVIEWER FEEDBACK ON THE PRIOR TAKE:",
     feedback,
     "",
-    "Propose an updated runway_prompt and characters_used. Address the feedback, AND strip any Rule-1 identity descriptors you find in the current prompt.",
+    "Propose updated runway_prompt, characters_used, and scene_ref. Address the feedback, AND strip Rule-1 identity descriptors. Ensure every character in characters_used appears as @Name in the prompt; if scene_ref is non-empty, reference it as @<slug>.",
   ].join("\n");
 
   const tool = {
     name: "propose_revision",
     description:
-      "Submit the proposed updates for the shot's runway_prompt and characters_used.",
+      "Submit the proposed updates for the shot's runway_prompt, characters_used, and scene_ref.",
     input_schema: {
       type: "object",
       properties: {
         runway_prompt: {
           type: "string",
           description:
-            "The full updated prompt to send to Runway. Include all context — this replaces the prior prompt, it does not append.",
+            "The full updated prompt to send to Runway. Replaces the prior prompt. Every character in characters_used must appear as @Name; if scene_ref is set, the slug must appear as @<slug>.",
         },
         characters_used: {
           type: "string",
           description:
-            "Comma-separated character names. Must be drawn from the valid list.",
+            "Comma-separated character names from the valid list. Order matters — only the first 3 get reference-bound when more than 3 are listed.",
+        },
+        scene_ref: {
+          type: "string",
+          description:
+            "Setting reference slug from the valid scene tags list, or empty string. Empty if no setting image fits or none registered.",
         },
         rationale: {
           type: "string",
           description:
-            "1-3 sentences describing what you changed and why, addressing the feedback.",
+            "1-3 sentences: (a) what feedback you addressed, (b) what Rule 1 cleanup you did.",
         },
       },
-      required: ["runway_prompt", "characters_used", "rationale"],
+      required: ["runway_prompt", "characters_used", "scene_ref", "rationale"],
     },
   };
 
@@ -168,6 +183,20 @@ async function fetchValidCharacters(): Promise<string[]> {
       const trimmed = name.trim();
       if (trimmed) set.add(trimmed);
     }
+  }
+  return Array.from(set).sort();
+}
+
+async function fetchValidScenes(): Promise<string[]> {
+  const { data, error } = await client
+    .from("production_queue")
+    .select("scene_ref")
+    .not("scene_ref", "is", null);
+  if (error) throw error;
+  const set = new Set<string>();
+  for (const row of data || []) {
+    const raw = (row as { scene_ref: string | null }).scene_ref;
+    if (raw && raw.trim()) set.add(raw.trim());
   }
   return Array.from(set).sort();
 }
@@ -244,12 +273,16 @@ async function handleAction(body: Record<string, unknown>) {
       if (shotErr) throw shotErr;
       if (!shot) throw new Error("Shot not found");
 
-      const validCharacters = await fetchValidCharacters();
+      const [validCharacters, validScenes] = await Promise.all([
+        fetchValidCharacters(),
+        fetchValidScenes(),
+      ]);
       const proposal = await proposeRevisionWithClaude(
         shot as Record<string, unknown>,
         run as Record<string, unknown>,
         feedback,
         validCharacters,
+        validScenes,
       );
 
       return {
@@ -260,6 +293,7 @@ async function handleAction(body: Record<string, unknown>) {
         current: {
           runway_prompt: (shot as { runway_prompt: string | null }).runway_prompt || "",
           characters_used: (shot as { characters_used: string | null }).characters_used || "",
+          scene_ref: (shot as { scene_ref: string | null }).scene_ref || "",
         },
         proposed: proposal,
       };
@@ -269,12 +303,13 @@ async function handleAction(body: Record<string, unknown>) {
       const runId = body.run_id as string;
       const newPrompt = body.runway_prompt as string;
       const newCharacters = body.characters_used as string;
+      const newSceneRef = (body.scene_ref as string) ?? "";
       const feedback = (body.feedback as string) || "";
       if (!shotId || !runId) throw new Error("shot_id and run_id required");
 
       const { data: shot, error: shotErr } = await client
         .from("production_queue")
-        .select("runway_prompt, characters_used")
+        .select("runway_prompt, characters_used, scene_ref")
         .eq("id", shotId)
         .single();
       if (shotErr) throw shotErr;
@@ -284,6 +319,7 @@ async function handleAction(body: Record<string, unknown>) {
         .update({
           runway_prompt: newPrompt,
           characters_used: newCharacters,
+          scene_ref: newSceneRef || null,
           previous_runway_prompt: (shot as { runway_prompt: string | null }).runway_prompt,
           previous_characters_used: (shot as { characters_used: string | null }).characters_used,
           reviewer_feedback: feedback,
@@ -304,6 +340,58 @@ async function handleAction(body: Record<string, unknown>) {
       if (runErr) throw runErr;
 
       return { success: true };
+    }
+    case "refresh_run": {
+      // Re-resolve a generation_run's video URL from Drive when the original
+      // Runway CDN link has expired (JWT 3-day expiry + Runway task retention).
+      // Returns a Drive embed URL that the dashboard renders as an <iframe>.
+      const runId = body.run_id as string;
+      if (!runId) throw new Error("run_id required");
+      if (!DRIVE_WEBAPP_URL) {
+        throw new Error("DRIVE_WEBAPP_URL not set in edge function secrets");
+      }
+
+      const { data: run, error: runErr } = await client
+        .from("generation_runs")
+        .select("drive_filename, drive_folder")
+        .eq("id", runId)
+        .single();
+      if (runErr) throw runErr;
+      if (!run) throw new Error("Run not found");
+
+      const filename = (run as { drive_filename: string | null }).drive_filename;
+      const folderUrl = (run as { drive_folder: string | null }).drive_folder;
+      if (!filename) throw new Error("run has no drive_filename — cannot refresh");
+      if (!folderUrl) throw new Error("run has no drive_folder — cannot refresh");
+
+      // drive_folder looks like https://drive.google.com/drive/folders/<ID>
+      const idMatch = folderUrl.match(/\/folders\/([A-Za-z0-9_-]+)/);
+      if (!idMatch) throw new Error(`Could not parse folder ID from ${folderUrl}`);
+      const folderId = idMatch[1];
+
+      const listUrl = `${DRIVE_WEBAPP_URL}?action=list&folderId=${encodeURIComponent(folderId)}`;
+      const driveResp = await fetch(listUrl);
+      if (!driveResp.ok) {
+        throw new Error(`Drive list failed: ${driveResp.status} ${await driveResp.text()}`);
+      }
+      const driveData = await driveResp.json();
+      if (driveData.error) throw new Error(`Drive list error: ${driveData.error}`);
+
+      type DriveFile = { id: string; name: string };
+      const files: DriveFile[] = driveData.files || [];
+      const match = files.find((f) => f.name === filename);
+      if (!match) {
+        throw new Error(
+          `File ${filename} not found in folder ${folderId} (${files.length} files there)`,
+        );
+      }
+
+      return {
+        success: true,
+        file_id: match.id,
+        preview_url: `https://drive.google.com/file/d/${match.id}/preview`,
+        folder_url: folderUrl,
+      };
     }
     default:
       throw new Error(`Unknown action: ${body.action}`);
