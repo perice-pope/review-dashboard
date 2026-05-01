@@ -297,6 +297,15 @@ async function handleAction(body: Record<string, unknown>) {
       if (!shotId) throw new Error("shot_id required");
       if (!raw) throw new Error("keyframe_image_url required");
 
+      // Server-side guard: Runway webpage URLs are HTML, not images. The
+      // runner can't fetch them as promptImage. Reject up-front so we don't
+      // burn 3 retries proving it.
+      if (/app\.runwayml\.com\/(creation|video-tools|ai-tools|gen|tasks)\//.test(raw)) {
+        throw new Error(
+          "Runway creation/share URLs are webpages, not images. Save the image to Drive and paste the file ID instead.",
+        );
+      }
+
       const { error } = await client
         .from("production_queue")
         .update({
@@ -310,6 +319,81 @@ async function handleAction(body: Record<string, unknown>) {
       const dispatch = await triggerRenderWorkflow();
       return {
         success: true,
+        render_triggered: dispatch.triggered,
+        render_trigger_reason: dispatch.reason,
+      };
+    }
+    case "upload_keyframe": {
+      // Drag-and-drop upload: dashboard sends the PNG bytes (base64) directly,
+      // we proxy to the Apps Script upload endpoint, save the resulting Drive
+      // file ID as the keyframe_image_url, and instant-trigger the workflow.
+      const shotId = body.shot_id as string;
+      const filename = (body.filename as string || "").trim();
+      const contentBase64 = body.content_base64 as string;
+      const mimeType = (body.mime_type as string) || "image/png";
+      if (!shotId) throw new Error("shot_id required");
+      if (!filename) throw new Error("filename required");
+      if (!contentBase64) throw new Error("content_base64 required");
+      if (!DRIVE_WEBAPP_URL) {
+        throw new Error("DRIVE_WEBAPP_URL not set in edge function secrets");
+      }
+
+      // Look up the song title to build a sensible folder name.
+      const { data: shot, error: shotErr } = await client
+        .from("production_queue")
+        .select("song_id, shot_name")
+        .eq("id", shotId)
+        .single();
+      if (shotErr) throw shotErr;
+      const songId = (shot as { song_id: string }).song_id;
+      const { data: song } = await client
+        .from("songs")
+        .select("song_title")
+        .eq("id", songId)
+        .single();
+      const songTitle = (song as { song_title: string } | null)?.song_title || "Unknown Song";
+      const folderName = `${songTitle} - Keyframes`;
+
+      // POST to Apps Script upload endpoint
+      const uploadResp = await fetch(DRIVE_WEBAPP_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "upload",
+          folder: folderName,
+          filename,
+          contentBase64,
+          mimeType,
+        }),
+      });
+      if (!uploadResp.ok) {
+        throw new Error(`Drive upload failed: ${uploadResp.status} ${await uploadResp.text()}`);
+      }
+      const driveResult = await uploadResp.json();
+      if (driveResult.error) {
+        throw new Error(`Drive upload error: ${driveResult.error}`);
+      }
+      const fileId = driveResult.fileId;
+      if (!fileId) {
+        throw new Error(`Drive upload returned no fileId: ${JSON.stringify(driveResult)}`);
+      }
+
+      // Save the file ID as the keyframe and flip status
+      const { error: updErr } = await client
+        .from("production_queue")
+        .update({
+          keyframe_image_url: fileId,
+          status: "revision_needed",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", shotId);
+      if (updErr) throw updErr;
+
+      const dispatch = await triggerRenderWorkflow();
+      return {
+        success: true,
+        file_id: fileId,
+        folder_url: driveResult.folderUrl,
         render_triggered: dispatch.triggered,
         render_trigger_reason: dispatch.reason,
       };

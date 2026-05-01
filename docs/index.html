@@ -47,6 +47,18 @@
   .compose-card .btn-apply { background: #2d8a4e; color: white; border: none; padding: 8px 14px; border-radius: 5px; font-size: 11px; font-weight: 700; cursor: pointer; }
   .compose-card .btn-apply:hover { opacity: 0.85; }
   .compose-card .btn-apply:disabled { opacity: 0.4; cursor: not-allowed; }
+  .compose-card .compose-steps { list-style: decimal inside; padding-left: 0; margin: 8px 0 14px; color: #c8a880; font-size: 12px; line-height: 1.7; }
+  .compose-card .compose-steps li { margin-bottom: 4px; }
+  .compose-card .compose-steps code { background: #2a1f10; color: #e8a060; padding: 1px 5px; border-radius: 3px; font-size: 11px; font-family: 'Courier New', monospace; }
+  .compose-card .compose-warn { color: #ff8a5a; }
+  .compose-card .compose-fineprint { color: #8a7060; font-size: 11px; line-height: 1.6; margin-top: 6px; }
+  .compose-card .compose-fineprint code { background: #2a1f10; padding: 1px 4px; border-radius: 3px; font-size: 10px; font-family: 'Courier New', monospace; color: #c8a880; }
+  .compose-card .compose-or { color: #6a5040; font-size: 11px; text-align: center; margin: 10px 0; letter-spacing: 0.4px; text-transform: uppercase; }
+  .compose-card .compose-drop { border: 2px dashed #4a3520; border-radius: 8px; padding: 18px 14px; text-align: center; color: #a08066; cursor: pointer; transition: all 0.15s; font-size: 12px; }
+  .compose-card .compose-drop:hover, .compose-card .compose-drop.dragover { border-color: #b87333; background: #221813; color: #e8a060; }
+  .compose-card .compose-drop input[type="file"] { display: none; }
+  .compose-card .compose-drop b { color: #d4a355; }
+  .compose-card .compose-uploading { color: #5b8a7a; font-size: 12px; }
 
   .btn-download { background: #2b3d52; color: #e8d5b0; border: 1px solid #5b8a7a; padding: 8px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600; transition: background 0.2s; }
   .btn-download:hover { background: #3a4d62; }
@@ -612,13 +624,17 @@ function renderComposeCard(shot) {
 
   var html = '<div class="compose-card" data-shot-id="' + shot.id + '">';
   html += '<h3>Compose Keyframe — ' + chars.length + ' character' + (chars.length===1?'':'s') + ' needed</h3>';
-  html += '<div class="compose-hint">';
-  html += 'This shot needs a hand-composed still so the character refs lock in. ';
-  html += 'Open Runway, paste the prompt, attach <b>' + esc(chars.join(', ') || '(none)') + '</b>';
-  html += (scene ? ' + scene <b>@' + esc(scene) + '</b>' : '');
-  html += ', generate until it looks right (~30s), then drop the file ID below. ';
-  html += 'The runner picks it up and animates it.';
-  html += '</div>';
+
+  html += '<div class="compose-hint"><b>The exact steps:</b></div>';
+  html += '<ol class="compose-steps">';
+  html += '<li>Click <b>Copy prompt</b> below, then <b>Open Runway</b> and pick <b>Image Tool</b> or <b>Scene Builder</b>.</li>';
+  html += '<li>Attach character references and tag them <code>' + esc(chars.map(function(c){return '@'+c.toLowerCase();}).join(' ') || '(none)') + '</code>';
+  if (scene) html += ' plus scene <code>@' + esc(scene) + '</code>';
+  html += '. Paste the prompt. Generate until it looks right (~30s).</li>';
+  html += '<li><b>Right-click the result image → Save Image As</b> → save into your Drive folder. <span class="compose-warn">Do NOT use Runway\'s "Share with anyone" link — that\'s a webpage, not an image, and the runner can\'t fetch it.</span></li>';
+  html += '<li>Open the file in Drive, copy its <b>file ID</b> from the URL (the long string between <code>/d/</code> and <code>/view</code>).</li>';
+  html += '<li>Paste the file ID below and click <b>Apply Keyframe</b>.</li>';
+  html += '</ol>';
 
   html += '<div class="compose-section-label">Prompt (copy into Runway)</div>';
   html += '<div class="compose-prompt" id="compose-prompt-' + shot.id + '">' + esc(prompt) + '</div>';
@@ -627,14 +643,26 @@ function renderComposeCard(shot) {
   html += '<a class="btn-runway" href="https://app.runwayml.com/" target="_blank" rel="noopener">Open Runway →</a>';
   html += '</div>';
 
-  html += '<div class="compose-section-label">Keyframe ID or URL</div>';
+  html += '<div class="compose-section-label">Upload PNG (drag-and-drop)</div>';
+  html += '<label class="compose-drop" id="compose-drop-' + shot.id + '" ';
+  html += 'ondragover="composeDragOver(event,\'' + shot.id + '\')" ';
+  html += 'ondragleave="composeDragLeave(event,\'' + shot.id + '\')" ';
+  html += 'ondrop="composeDrop(event,\'' + shot.id + '\')">';
+  html += '<input type="file" accept="image/png,image/jpeg" onchange="composeFileChosen(event,\'' + shot.id + '\')">';
+  html += '<div id="compose-drop-text-' + shot.id + '"><b>Drop a PNG here</b> (or click to choose) — uploads to Drive and locks it as the keyframe.</div>';
+  html += '</label>';
+
+  html += '<div class="compose-or">— or —</div>';
+
+  html += '<div class="compose-section-label">Drive file ID (or direct image URL)</div>';
   html += '<div class="compose-row">';
   html += '<input class="compose-input" id="compose-input-' + shot.id + '" ';
-  html += 'placeholder="Drive file ID, https://drive.google.com/..., or runway://upload/..."';
+  html += 'placeholder="Drive file ID — e.g. 1AbCDeFG12345... (NOT a Runway share link)"';
   if (existing) html += ' value="' + esc(existing) + '"';
   html += '>';
   html += '<button class="btn-apply" id="compose-apply-' + shot.id + '" onclick="applyKeyframe(\'' + shot.id + '\',this)">Apply Keyframe</button>';
   html += '</div>';
+  html += '<div class="compose-fineprint">Accepts: Drive file ID, <code>https://drive.google.com/file/d/&lt;ID&gt;/view</code>, <code>https://lh3.googleusercontent.com/d/&lt;ID&gt;</code>, <code>runway://upload/&lt;id&gt;</code>, or any direct PNG/JPG URL. Does NOT accept Runway creation/share pages (<code>app.runwayml.com/creation/...</code>) — those are webpages.</div>';
 
   html += '<div class="compose-meta" style="margin-top:10px">';
   html += '<b>Characters:</b> ' + esc(chars.join(', ') || '(none)');
@@ -657,6 +685,12 @@ function applyKeyframe(shotId, btn) {
   var input = document.getElementById('compose-input-' + shotId);
   var val = (input && input.value || '').trim();
   if (!val) { toast('Paste a Drive file ID or URL first', 'error'); return; }
+  // Reject Runway webpage URLs upfront — they're HTML, not images, and the
+  // runner can't fetch them. Save the user a 3-attempt failure cycle.
+  if (/app\.runwayml\.com\/(creation|video-tools|ai-tools|gen|tasks)\//.test(val)) {
+    toast('That\'s a Runway webpage URL, not an image. Save the image to Drive and paste the file ID instead.', 'error');
+    return;
+  }
   if (btn) btn.disabled = true;
   apiCall({ action: 'set_keyframe', shot_id: shotId, keyframe_image_url: val })
     .then(function(resp){
@@ -668,6 +702,64 @@ function applyKeyframe(shotId, btn) {
       if (btn) btn.disabled = false;
       toast('Apply failed: ' + err.message, 'error');
     });
+}
+
+function composeDragOver(e, shotId) {
+  e.preventDefault();
+  var el = document.getElementById('compose-drop-' + shotId);
+  if (el) el.classList.add('dragover');
+}
+function composeDragLeave(e, shotId) {
+  e.preventDefault();
+  var el = document.getElementById('compose-drop-' + shotId);
+  if (el) el.classList.remove('dragover');
+}
+function composeDrop(e, shotId) {
+  e.preventDefault();
+  var el = document.getElementById('compose-drop-' + shotId);
+  if (el) el.classList.remove('dragover');
+  var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) uploadKeyframeFile(shotId, file);
+}
+function composeFileChosen(e, shotId) {
+  var file = e.target && e.target.files && e.target.files[0];
+  if (file) uploadKeyframeFile(shotId, file);
+}
+
+function uploadKeyframeFile(shotId, file) {
+  var textEl = document.getElementById('compose-drop-text-' + shotId);
+  if (!/^image\//.test(file.type)) {
+    toast('Drop a PNG or JPG, not ' + (file.type || 'this file type'), 'error');
+    return;
+  }
+  if (textEl) textEl.innerHTML = '<span class="compose-uploading">Uploading ' + esc(file.name) + ' to Drive…</span>';
+
+  var reader = new FileReader();
+  reader.onload = function() {
+    // FileReader gives a data URI. Strip the prefix to get raw base64.
+    var dataUri = reader.result || '';
+    var commaIdx = dataUri.indexOf(',');
+    var base64 = commaIdx >= 0 ? dataUri.substring(commaIdx + 1) : '';
+    apiCall({
+      action: 'upload_keyframe',
+      shot_id: shotId,
+      filename: file.name || ('keyframe_' + Date.now() + '.png'),
+      content_base64: base64,
+      mime_type: file.type || 'image/png',
+    }).then(function(resp) {
+      if (resp && resp.render_triggered) toast('Uploaded → keyframe locked → render started');
+      else toast('Uploaded → keyframe locked');
+      loadData();
+    }).catch(function(err) {
+      if (textEl) textEl.innerHTML = '<b>Drop a PNG here</b> (or click to choose)';
+      toast('Upload failed: ' + err.message, 'error');
+    });
+  };
+  reader.onerror = function() {
+    if (textEl) textEl.innerHTML = '<b>Drop a PNG here</b> (or click to choose)';
+    toast('Could not read file', 'error');
+  };
+  reader.readAsDataURL(file);
 }
 
 function recomposeFromModal(shotId) {
