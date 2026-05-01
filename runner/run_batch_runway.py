@@ -45,7 +45,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Local registry — single source of truth for character/scene images.
@@ -142,7 +142,37 @@ SB_HEADERS = {
 }
 
 
+STUCK_GENERATING_MINUTES = 15  # how long a 'generating' shot must idle before we
+                               # treat it as orphaned (cancelled/crashed previous run)
+
+
+def recover_stuck_shots():
+    """
+    Reset shots stuck in 'generating' for > STUCK_GENERATING_MINUTES back to
+    'revision_needed' so they get retried. Catches the case where a previous
+    runner was cancelled or crashed after flipping status to generating but
+    before completing.
+    """
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(minutes=STUCK_GENERATING_MINUTES)).isoformat()
+    q = urllib.parse.urlencode({
+        "primary_tool": "eq.runway_gen4_references",
+        "status":       "eq.generating",
+        "updated_at":   f"lt.{cutoff}",
+        "select":       "id,shot_name,updated_at",
+    })
+    status, resp = http(f"{SUPABASE_URL}/rest/v1/production_queue?{q}", headers=SB_HEADERS)
+    if status != 200 or not isinstance(resp, list):
+        return
+    for shot in resp:
+        print(f"  ⏪  reviving stuck shot {shot.get('shot_name')} "
+              f"(generating since {shot.get('updated_at')})")
+        update_shot(shot["id"], status="revision_needed",
+                    review_notes="Auto-revived: previous runner did not complete")
+
+
 def fetch_ready_shots():
+    recover_stuck_shots()
     q = urllib.parse.urlencode({
         "primary_tool": "eq.runway_gen4_references",
         "status":       "in.(queued,revision_needed)",
@@ -182,7 +212,7 @@ def record_generation_run(shot, video_url, drive_filename, drive_folder_url, dur
         "production_queue_id": shot["id"],
         "shot_name":           shot.get("shot_name"),
         "character_name":      character_name,
-        "tool_used":           "runway_gen4_references",
+        "tool_used":           "runway",
         "fal_status":          "completed",
         "video_url":           video_url,
         "drive_filename":      drive_filename,
