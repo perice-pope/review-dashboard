@@ -118,12 +118,17 @@ def lookup_scene(tag: str) -> str | None:
 #  runner translates the existing @maya/@noah tags in runway_prompt to the
 #  trigger words before submitting to Replicate.
 # ─────────────────────────────────────────────────────────────────────────────
+# Optional `extra_input` dict per character — merged into the Replicate input
+# payload so you can tune knobs like num_inference_steps or guidance without
+# touching the runner. FLUX-dev LoRAs typically accept ~28 steps + guidance 3.5;
+# FLUX-schnell-derived LoRAs cap steps at 4. The runner falls back to the
+# model's published defaults when extra_input is empty/missing.
 CHARACTER_LORAS: dict[str, dict] = {
-    "Peter":  {"lora": None, "version": None, "trigger": "PETER_RM"},
-    "Marcus": {"lora": None, "version": None, "trigger": "MARCUS_RM"},
-    "Julian": {"lora": None, "version": None, "trigger": "JULIAN_RM"},
-    "Noah":   {"lora": None, "version": None, "trigger": "NOAH_RM"},
-    "Maya":   {"lora": None, "version": None, "trigger": "MAYA_RM"},
+    "Peter":  {"lora": None, "version": None, "trigger": "PETER_RM", "extra_input": {}},
+    "Marcus": {"lora": None, "version": None, "trigger": "MARCUS_RM", "extra_input": {}},
+    "Julian": {"lora": None, "version": None, "trigger": "JULIAN_RM", "extra_input": {}},
+    "Noah":   {"lora": None, "version": None, "trigger": "NOAH_RM", "extra_input": {}},
+    "Maya":   {"lora": None, "version": None, "trigger": "MAYA_RM", "extra_input": {}},
 }
 
 

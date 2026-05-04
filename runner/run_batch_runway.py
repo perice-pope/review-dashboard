@@ -619,6 +619,9 @@ def process_shot(shot: dict) -> None:
 _replicate_hdr = {
     "Authorization": f"Bearer {REPLICATE_API_TOKEN}" if REPLICATE_API_TOKEN else "",
     "Content-Type":  "application/json",
+    # Replicate's edge blocks the default Python-urllib UA with 403. Set any
+    # non-default UA and we're through.
+    "User-Agent":    "roommates-runner/1.0",
 }
 
 
@@ -648,9 +651,12 @@ def submit_replicate_still(prompt: str, lora_infos: list[dict], aspect_ratio: st
     Submit a still-image generation to Replicate using one or more character
     LoRAs. Returns the prediction id; caller polls.
 
-    Uses the multi-LoRA FLUX endpoint pattern. The exact model used is the
-    user's first character LoRA (Replicate runs the LoRA against FLUX dev base).
-    Additional LoRAs are stacked via extra_lora_scale weights when supported.
+    Each LoRA entry may carry an optional `extra_input` dict whose keys are
+    merged into the input payload. Use this to override num_inference_steps,
+    guidance, or any other model-specific knob without touching this function.
+
+    Additional LoRAs (beyond the primary) are stacked via extra_lora /
+    extra_lora_scale, the standard FLUX-LoRA-trainer field names.
     """
     if not REPLICATE_API_TOKEN:
         raise RuntimeError("REPLICATE_API_TOKEN not set")
@@ -660,21 +666,21 @@ def submit_replicate_still(prompt: str, lora_infos: list[dict], aspect_ratio: st
     primary = lora_infos[0]
     extra = lora_infos[1:]
 
-    body: dict = {
-        "input": {
-            "prompt":        prompt,
-            "aspect_ratio":  aspect_ratio,
-            "output_format": "png",
-            "num_outputs":   1,
-            "guidance":      3.5,
-            "num_inference_steps": 28,
-        }
+    inp: dict = {
+        "prompt":        prompt,
+        "aspect_ratio":  aspect_ratio,
+        "output_format": "png",
+        "num_outputs":   1,
     }
-    # Extra LoRAs: a Replicate FLUX-LoRA model can accept extra_lora + extra_lora_scale.
+    # Extra LoRAs: FLUX-LoRA-trainer outputs accept extra_lora + extra_lora_scale.
     if extra:
-        body["input"]["extra_lora"] = extra[0]["lora"]
-        body["input"]["extra_lora_scale"] = 0.85
+        inp["extra_lora"] = extra[0]["lora"]
+        inp["extra_lora_scale"] = 0.85
 
+    # Merge per-LoRA overrides last so they win against defaults above.
+    inp.update(primary.get("extra_input") or {})
+
+    body: dict = {"input": inp}
     if primary.get("version"):
         body["version"] = primary["version"]
         endpoint = f"{REPLICATE_BASE}/predictions"
