@@ -96,3 +96,52 @@ def lookup_scene(tag: str) -> str | None:
     if not tag:
         return None
     return SCENES.get(tag.strip())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CHARACTER_LORAS — Replicate-trained LoRA per character (still generation)
+#
+#  After training a LoRA on Replicate (see runner/training.md or the VA pilot
+#  guide), drop the model identifier here. Format:
+#
+#      "Maya": {
+#          "lora": "perice-pope/maya-roommates",   # Replicate model id
+#          "version": "abc123…",                   # specific version hash, optional
+#          "trigger": "MAYA_RM",                   # the prompt token that summons her
+#      }
+#
+#  Leave `lora` as None until that character is trained — the runner falls back
+#  to the manual-keyframe path (status=needs_keyframe) for any shot that uses a
+#  character whose LoRA isn't ready.
+#
+#  Trigger words go in prompts as plain ALL-CAPS tokens (NO @ symbol). The
+#  runner translates the existing @maya/@noah tags in runway_prompt to the
+#  trigger words before submitting to Replicate.
+# ─────────────────────────────────────────────────────────────────────────────
+CHARACTER_LORAS: dict[str, dict] = {
+    "Peter":  {"lora": None, "version": None, "trigger": "PETER_RM"},
+    "Marcus": {"lora": None, "version": None, "trigger": "MARCUS_RM"},
+    "Julian": {"lora": None, "version": None, "trigger": "JULIAN_RM"},
+    "Noah":   {"lora": None, "version": None, "trigger": "NOAH_RM"},
+    "Maya":   {"lora": None, "version": None, "trigger": "MAYA_RM"},
+}
+
+
+def lookup_lora(name: str) -> dict | None:
+    """Case-insensitive lookup. Returns None if name unknown OR LoRA not trained."""
+    if not name:
+        return None
+    target = name.strip().lower()
+    for key, val in CHARACTER_LORAS.items():
+        if key.lower() == target and val.get("lora"):
+            return val
+    return None
+
+
+def all_loras_ready(names: list[str]) -> tuple[bool, list[str]]:
+    """Return (all_ready, missing_names) for a list of character names."""
+    missing = []
+    for n in names:
+        if not lookup_lora(n):
+            missing.append(n)
+    return (not missing, missing)

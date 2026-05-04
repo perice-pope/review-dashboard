@@ -288,6 +288,67 @@ async function handleAction(body: Record<string, unknown>) {
       if (error) throw error;
       return { success: true };
     }
+    case "regenerate_still": {
+      // User clicked "Regenerate Still" on the dashboard. Optionally update
+      // the prompt, clear the existing still, flip status to queued so the
+      // runner picks it up and calls Replicate again.
+      const shotId = body.shot_id as string;
+      const newPrompt = (body.runway_prompt as string | undefined);
+      if (!shotId) throw new Error("shot_id required");
+
+      const updates: Record<string, unknown> = {
+        keyframe_image_url: null,
+        status: "queued",
+        updated_at: new Date().toISOString(),
+      };
+      if (typeof newPrompt === "string" && newPrompt.trim()) {
+        updates.runway_prompt = newPrompt;
+      }
+      const { error } = await client
+        .from("production_queue")
+        .update(updates)
+        .eq("id", shotId);
+      if (error) throw error;
+
+      const dispatch = await triggerRenderWorkflow();
+      return {
+        success: true,
+        render_triggered: dispatch.triggered,
+        render_trigger_reason: dispatch.reason,
+      };
+    }
+    case "animate_still": {
+      // User clicked the green "Animate" button on a reviewed still.
+      // Optionally update the animation prompt + chosen animation model,
+      // flip status to revision_needed so the runner runs Stage 2.
+      const shotId = body.shot_id as string;
+      const newPrompt = (body.runway_prompt as string | undefined);
+      const newModel = (body.animation_model as string | undefined);
+      if (!shotId) throw new Error("shot_id required");
+
+      const updates: Record<string, unknown> = {
+        status: "revision_needed",
+        updated_at: new Date().toISOString(),
+      };
+      if (typeof newPrompt === "string" && newPrompt.trim()) {
+        updates.runway_prompt = newPrompt;
+      }
+      if (typeof newModel === "string" && newModel.trim()) {
+        updates.animation_model = newModel;
+      }
+      const { error } = await client
+        .from("production_queue")
+        .update(updates)
+        .eq("id", shotId);
+      if (error) throw error;
+
+      const dispatch = await triggerRenderWorkflow();
+      return {
+        success: true,
+        render_triggered: dispatch.triggered,
+        render_trigger_reason: dispatch.reason,
+      };
+    }
     case "set_keyframe": {
       // Path B handoff: dashboard wrote a keyframe URL/file ID. Save it,
       // flip status to revision_needed so the runner re-picks the shot,

@@ -48,9 +48,12 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Local registry — single source of truth for character/scene images.
+# Local registry — single source of truth for character/scene images and LoRAs.
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-from assets import CHARACTERS, SCENES, lookup_character, lookup_scene  # noqa: E402
+from assets import (  # noqa: E402
+    CHARACTERS, SCENES, CHARACTER_LORAS,
+    lookup_character, lookup_scene, lookup_lora, all_loras_ready,
+)
 
 try:
     import certifi
@@ -80,22 +83,28 @@ _ENV = _load_env(_HERE / ".env")
 for parent_env in (_HERE.parents[2] / ".env", _HERE.parents[3] / ".env"):
     _ENV.update({k: v for k, v in _load_env(parent_env).items() if k not in _ENV})
 
-SUPABASE_URL     = _ENV.get("SUPABASE_URL")     or os.environ.get("SUPABASE_URL")
-SUPABASE_KEY     = _ENV.get("SUPABASE_KEY")     or os.environ.get("SUPABASE_KEY")
-RUNWAY_API_KEY   = _ENV.get("RUNWAY_API_KEY")   or os.environ.get("RUNWAY_API_KEY")
-DRIVE_WEBAPP_URL = _ENV.get("DRIVE_WEBAPP_URL") or os.environ.get("DRIVE_WEBAPP_URL", "")
+SUPABASE_URL        = _ENV.get("SUPABASE_URL")        or os.environ.get("SUPABASE_URL")
+SUPABASE_KEY        = _ENV.get("SUPABASE_KEY")        or os.environ.get("SUPABASE_KEY")
+RUNWAY_API_KEY      = _ENV.get("RUNWAY_API_KEY")      or os.environ.get("RUNWAY_API_KEY")
+DRIVE_WEBAPP_URL    = _ENV.get("DRIVE_WEBAPP_URL")    or os.environ.get("DRIVE_WEBAPP_URL", "")
+REPLICATE_API_TOKEN = _ENV.get("REPLICATE_API_TOKEN") or os.environ.get("REPLICATE_API_TOKEN", "")
 
 RUNWAY_BASE    = "https://api.dev.runwayml.com/v1"
 RUNWAY_VERSION = "2024-11-06"
 
-KEYFRAME_MODEL = "gen4_image"   # supports referenceImages, up to 3
-VIDEO_MODEL    = "gen4.5"       # image_to_video — animates the keyframe
+REPLICATE_BASE = "https://api.replicate.com/v1"
 
-REF_CAP        = 3              # Runway hard limit per text_to_image call
+# Legacy text_to_image path (kept for shots without LoRAs available)
+KEYFRAME_MODEL = "gen4_image"
+
+# Default animation model — Seedance 2. Per-shot override via production_queue.animation_model
+DEFAULT_ANIMATION_MODEL = "seedance2"
+
+REF_CAP        = 3
 MAX_ATTEMPTS   = 3
 POLL_INTERVAL  = 10
 POLL_TIMEOUT   = 60 * 8
-VIDEO_DURATION = 10             # seconds; gen4.5 takes integers 2..10
+VIDEO_DURATION = 10
 
 missing = [k for k, v in [("SUPABASE_URL", SUPABASE_URL),
                           ("SUPABASE_KEY", SUPABASE_KEY),
@@ -148,31 +157,36 @@ STUCK_GENERATING_MINUTES = 15  # how long a 'generating' shot must idle before w
 
 def recover_stuck_shots():
     """
-    Reset shots stuck in 'generating' for > STUCK_GENERATING_MINUTES back to
-    'revision_needed' so they get retried. Catches the case where a previous
-    runner was cancelled or crashed after flipping status to generating but
-    before completing.
+    Reset shots stuck in any transient runner state for > STUCK_GENERATING_MINUTES
+    back to 'queued' so they get retried. Catches cancelled/crashed runners.
+    Transient states: 'generating' (legacy), 'still_pending', 'animating'.
     """
     cutoff = (datetime.now(timezone.utc)
               - timedelta(minutes=STUCK_GENERATING_MINUTES)).isoformat()
     q = urllib.parse.urlencode({
         "primary_tool": "eq.runway_gen4_references",
-        "status":       "eq.generating",
+        "status":       "in.(generating,still_pending,animating)",
         "updated_at":   f"lt.{cutoff}",
-        "select":       "id,shot_name,updated_at",
+        "select":       "id,shot_name,status,updated_at",
     })
     status, resp = http(f"{SUPABASE_URL}/rest/v1/production_queue?{q}", headers=SB_HEADERS)
     if status != 200 or not isinstance(resp, list):
         return
     for shot in resp:
         print(f"  ⏪  reviving stuck shot {shot.get('shot_name')} "
-              f"(generating since {shot.get('updated_at')})")
-        update_shot(shot["id"], status="revision_needed",
+              f"({shot.get('status')} since {shot.get('updated_at')})")
+        # If they were animating, keyframe was set → revision_needed retries Stage 2.
+        # Otherwise → queued retries Stage 1.
+        revive_to = "revision_needed" if shot.get("status") == "animating" else "queued"
+        update_shot(shot["id"], status=revive_to,
                     review_notes="Auto-revived: previous runner did not complete")
 
 
 def fetch_ready_shots():
     recover_stuck_shots()
+    # Pick up shots in any state where the runner has work to do:
+    #   queued          → fresh shot, generate still via Replicate (or fall back)
+    #   revision_needed → user clicked Animate or revised; runner picks next stage
     q = urllib.parse.urlencode({
         "primary_tool": "eq.runway_gen4_references",
         "status":       "in.(queued,revision_needed)",
@@ -468,23 +482,6 @@ def video_ratio_for(image_ratio: str) -> str:
     return _VIDEO_RATIO.get(image_ratio, "720:1280" if "9:16" in image_ratio else "720:1280")
 
 
-def submit_animation(image_url: str, prompt: str, ratio: str, duration: int) -> str:
-    body = {
-        "model":       VIDEO_MODEL,
-        "promptImage": image_url,
-        "promptText":  prompt,
-        "duration":    duration,
-        "ratio":       ratio,
-    }
-    status, resp = http(
-        f"{RUNWAY_BASE}/image_to_video",
-        method="POST", headers=_runway_hdr, data=body, timeout=60,
-    )
-    if status >= 400:
-        raise RuntimeError(f"Runway image_to_video failed [{status}]: {resp}")
-    return resp["id"]
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Save to Drive
 # ─────────────────────────────────────────────────────────────────────────────
@@ -530,20 +527,34 @@ def parse_chars(raw: str | None) -> list[str]:
 
 def route_shot(shot: dict) -> str:
     """
-    Route a runway-tool shot to one of three paths:
+    Route a runway-tool shot to one of these paths:
 
-      "B"             — keyframe locked: animate it as-is. Pixel-perfect identity.
-      "needs_keyframe"— multi-character with no keyframe: human must compose first.
-      "C"             — drift-tolerant auto: text_to_image + image_to_video.
+      "animate"        — keyframe locked + status=revision_needed: run image_to_video.
+                         The user has approved the still; produce the clip.
+      "generate_still" — no keyframe + characters' LoRAs all trained: call Replicate
+                         to produce a still. User reviews before animating.
+      "needs_keyframe" — no keyframe + missing/no LoRAs: human uploads still manually.
+      "legacy_C"       — characters present without LoRAs and shot has scene/refs;
+                         fall back to text_to_image + image_to_video pipeline. Drift.
 
-    Path A (omnihuman) is handled by run_batch.py, not this runner.
+    Path A (omnihuman) is handled by run_batch.py.
     """
-    if (shot.get("keyframe_image_url") or "").strip():
-        return "B"
-    chars = parse_chars(shot.get("characters_used"))
-    if len(chars) > 1:
+    has_kf  = bool((shot.get("keyframe_image_url") or "").strip())
+    chars   = parse_chars(shot.get("characters_used"))
+    status  = (shot.get("status") or "").strip()
+
+    if has_kf and status == "revision_needed":
+        return "animate"
+    if has_kf:
+        # Keyframe set but status is queued — also animate (handles fresh queue
+        # entries that already came in with a keyframe pre-populated)
+        return "animate"
+    if not chars:
         return "needs_keyframe"
-    return "C"
+    ready, _ = all_loras_ready(chars)
+    if ready:
+        return "generate_still"
+    return "needs_keyframe"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -557,15 +568,19 @@ def process_shot(shot: dict) -> None:
     path = route_shot(shot)
     print(f"\n[{name}] start — song={song} path={path}")
 
+    # Stop early for human-gated states. No API call.
     if path == "needs_keyframe":
         chars = parse_chars(shot.get("characters_used"))
-        update_shot(
-            db_id,
-            status       = "needs_keyframe",
-            review_notes = (f"Multi-character shot ({', '.join(chars)}) — compose a keyframe "
-                            f"in Runway, then paste it into the dashboard. No API call made."),
-        )
-        print(f"  → needs_keyframe ({len(chars)} chars: {chars})")
+        ready, missing = all_loras_ready(chars)
+        if missing and chars:
+            note = (f"LoRAs not trained for {', '.join(missing)}. Train via Replicate or "
+                    f"upload a manual keyframe.")
+        elif not chars:
+            note = "No characters set — upload a manual keyframe to animate."
+        else:
+            note = "Manual keyframe required."
+        update_shot(db_id, status="needs_keyframe", review_notes=note)
+        print(f"  → needs_keyframe — {note}")
         return
 
     prompt_raw = shot.get("runway_prompt") or shot.get("final_prompt") or ""
@@ -574,54 +589,230 @@ def process_shot(shot: dict) -> None:
         print("  FAILED — runway_prompt is empty")
         return
 
-    update_shot(db_id, status="generating")
-
     img_ratio = image_ratio_for(shot)
     vid_ratio = video_ratio_for(img_ratio)
     duration  = max(2, min(int(shot.get("duration_seconds") or VIDEO_DURATION), 10))
     next_version = count_existing_runs(db_id) + 1
-    base_name    = f"{song.replace(' ', '')}_{name.replace(' ', '')}_gen4_v{next_version}"
+    base_name    = f"{song.replace(' ', '')}_{name.replace(' ', '')}_v{next_version}"
     drive_folder = f"{song} - Generated Shots"
 
-    if path == "B":
-        run_path_b(shot, prompt_raw, vid_ratio, duration,
-                   base_name, drive_folder, db_id, next_version)
-    else:
-        run_path_c(shot, prompt_raw, img_ratio, vid_ratio, duration,
-                   base_name, drive_folder, db_id, next_version)
+    if path == "generate_still":
+        update_shot(db_id, status="still_pending")
+        run_replicate_still(shot, prompt_raw, img_ratio, db_id)
+        return
+
+    if path == "animate":
+        update_shot(db_id, status="animating")
+        run_animate_keyframe(shot, prompt_raw, vid_ratio, duration,
+                             base_name, drive_folder, db_id, next_version)
+        return
+
+    # Should never hit; routing has covered everything above.
+    update_shot(db_id, status="failed",
+                review_notes=f"Unrouted shot — path={path}")
+    print(f"  FAILED — unrouted ({path})")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Path B — animate a locked keyframe (no text_to_image)
+#  Stage 1 — Replicate still generation (LoRA-driven, character-faithful)
 # ─────────────────────────────────────────────────────────────────────────────
-def run_path_b(shot: dict, prompt_raw: str, vid_ratio: str, duration: int,
-               base_name: str, drive_folder: str, db_id: str, next_version: int) -> None:
+_replicate_hdr = {
+    "Authorization": f"Bearer {REPLICATE_API_TOKEN}" if REPLICATE_API_TOKEN else "",
+    "Content-Type":  "application/json",
+}
+
+
+# Translate @<name> tokens in the existing runway_prompt to the trained LoRA's
+# trigger word (e.g. @maya → MAYA_RM). Names with no LoRA stay as @ tokens.
+def trigger_translate_prompt(prompt: str) -> str:
+    if not prompt:
+        return prompt
+    def repl(m: re.Match) -> str:
+        raw = m.group(1)
+        info = lookup_lora(raw)
+        return info["trigger"] if info else m.group(0)
+    return re.sub(r"@([A-Za-z][A-Za-z0-9_]*)", repl, prompt)
+
+
+def replicate_aspect_ratio_for(img_ratio: str) -> str:
+    """Replicate FLUX aspect_ratio strings (e.g. '9:16', '16:9', '1:1')."""
+    if "1280:720" in img_ratio or "1920:1080" in img_ratio:
+        return "16:9"
+    if "1024:1024" in img_ratio or "960:960" in img_ratio:
+        return "1:1"
+    return "9:16"
+
+
+def submit_replicate_still(prompt: str, lora_infos: list[dict], aspect_ratio: str) -> str:
     """
-    The keyframe was composed by a human in Runway's web UI and dropped into the
-    dashboard. The runner just animates it — character identity is already
-    perfect because the still IS the ground truth.
+    Submit a still-image generation to Replicate using one or more character
+    LoRAs. Returns the prediction id; caller polls.
+
+    Uses the multi-LoRA FLUX endpoint pattern. The exact model used is the
+    user's first character LoRA (Replicate runs the LoRA against FLUX dev base).
+    Additional LoRAs are stacked via extra_lora_scale weights when supported.
+    """
+    if not REPLICATE_API_TOKEN:
+        raise RuntimeError("REPLICATE_API_TOKEN not set")
+    if not lora_infos:
+        raise ValueError("submit_replicate_still requires at least one LoRA")
+
+    primary = lora_infos[0]
+    extra = lora_infos[1:]
+
+    body: dict = {
+        "input": {
+            "prompt":        prompt,
+            "aspect_ratio":  aspect_ratio,
+            "output_format": "png",
+            "num_outputs":   1,
+            "guidance":      3.5,
+            "num_inference_steps": 28,
+        }
+    }
+    # Extra LoRAs: a Replicate FLUX-LoRA model can accept extra_lora + extra_lora_scale.
+    if extra:
+        body["input"]["extra_lora"] = extra[0]["lora"]
+        body["input"]["extra_lora_scale"] = 0.85
+
+    if primary.get("version"):
+        body["version"] = primary["version"]
+        endpoint = f"{REPLICATE_BASE}/predictions"
+    else:
+        # Run the latest version of the named model
+        endpoint = f"{REPLICATE_BASE}/models/{primary['lora']}/predictions"
+
+    status, resp = http(endpoint, method="POST", headers=_replicate_hdr, data=body, timeout=60)
+    if status >= 400:
+        raise RuntimeError(f"Replicate submit failed [{status}]: {resp}")
+    return resp.get("id") or resp.get("urls", {}).get("get", "").rstrip("/").split("/")[-1]
+
+
+def poll_replicate(prediction_id: str) -> dict:
+    started = time.time()
+    while True:
+        status, resp = http(
+            f"{REPLICATE_BASE}/predictions/{prediction_id}",
+            headers=_replicate_hdr, timeout=30,
+        )
+        if status != 200:
+            raise RuntimeError(f"Replicate poll failed [{status}]: {resp}")
+        state = (resp or {}).get("status")
+        if state == "succeeded":
+            return resp
+        if state in ("failed", "canceled"):
+            raise RuntimeError(f"Replicate prediction {state}: {resp.get('error') or resp}")
+        if time.time() - started > POLL_TIMEOUT:
+            raise TimeoutError(f"Replicate {prediction_id} stuck in {state} after {POLL_TIMEOUT}s")
+        time.sleep(POLL_INTERVAL)
+
+
+def run_replicate_still(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
+    """
+    Stage 1: generate a still using the character LoRAs. On success: store the
+    URL in keyframe_image_url and flip status to still_review (human gate).
+    On failure: revision_needed with a useful note.
+    """
+    chars = parse_chars(shot.get("characters_used"))
+    ready, missing = all_loras_ready(chars)
+    if not ready:
+        update_shot(db_id, status="needs_keyframe",
+                    review_notes=f"LoRAs not trained for {', '.join(missing)} — upload manually.")
+        return
+
+    lora_infos = [lookup_lora(c) for c in chars]
+    prompt = trigger_translate_prompt(prompt_raw)
+    aspect = replicate_aspect_ratio_for(img_ratio)
+    triggers = [info["trigger"] for info in lora_infos]
+    print(f"  [Stage 1] Replicate still — LoRAs={[i['lora'] for i in lora_infos]} aspect={aspect}")
+    print(f"           prompt={prompt[:120]}…  triggers={triggers}")
+
+    last_err: Exception | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            pred_id = submit_replicate_still(prompt, lora_infos, aspect)
+            print(f"  [Stage 1] prediction {pred_id}")
+            result = poll_replicate(pred_id)
+            output = result.get("output")
+            if isinstance(output, list):
+                still_url = output[0] if output else None
+            else:
+                still_url = output
+            if not still_url:
+                raise RuntimeError(f"Replicate succeeded with no output URL: {result}")
+            print(f"  [Stage 1] still OK → {still_url[:80]}…")
+
+            update_shot(
+                db_id,
+                status             = "still_review",
+                keyframe_image_url = still_url,
+                review_notes       = f"Stage 1: Replicate {pred_id[:8]} ({','.join(triggers)})",
+            )
+            return
+        except Exception as e:
+            last_err = e
+            print(f"  [Stage 1] attempt {attempt} failed: {e}")
+            time.sleep(3)
+
+    update_shot(db_id, status="revision_needed",
+                review_notes=f"Replicate still failed after {MAX_ATTEMPTS}: {str(last_err)[:300]}")
+    print(f"  FAILED — Replicate exhausted")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Stage 2 — Runway image_to_video animation (Seedance 2 by default)
+# ─────────────────────────────────────────────────────────────────────────────
+def submit_animation(image_url: str, prompt: str, ratio: str, duration: int,
+                     model: str = DEFAULT_ANIMATION_MODEL) -> str:
+    """
+    Submit image_to_video. Default model is seedance2 (more aspect ratios,
+    larger prompt budget). Falls through to the simple body shape both
+    seedance2 and gen4.5 accept.
+    """
+    body = {
+        "model":       model,
+        "promptImage": image_url,
+        "promptText":  prompt,
+        "duration":    duration,
+        "ratio":       ratio,
+    }
+    status, resp = http(
+        f"{RUNWAY_BASE}/image_to_video",
+        method="POST", headers=_runway_hdr, data=body, timeout=60,
+    )
+    if status >= 400:
+        raise RuntimeError(f"Runway image_to_video failed [{status}]: {resp}")
+    return resp["id"]
+
+
+def run_animate_keyframe(shot: dict, prompt_raw: str, vid_ratio: str, duration: int,
+                         base_name: str, drive_folder: str, db_id: str,
+                         next_version: int) -> None:
+    """
+    Stage 2: animate the locked still via Runway image_to_video. Defaults to
+    Seedance 2 unless the shot's animation_model column overrides.
     """
     try:
         keyframe_uri = resolve_keyframe_uri(shot["keyframe_image_url"])
     except Exception as e:
-        update_shot(db_id, status="revision_needed",
+        update_shot(db_id, status="needs_keyframe",
                     review_notes=f"keyframe_image_url unusable: {str(e)[:300]}")
         print(f"  FAILED — bad keyframe_image_url: {e}")
         return
 
-    # Path B: prompt drives motion only; no character refs needed in the prompt
-    # (the keyframe locks identity). Still pass the prompt through normalization
-    # for tag-casing consistency.
-    refs_for_norm: list[dict] = []  # no refs in this path
-    prompt = normalize_prompt_tags(prompt_raw, refs_for_norm)
+    # Animation prompt: trigger-translated so motion descriptions reference
+    # the same character names. (Animation model doesn't use LoRAs but the
+    # consistent naming keeps logs readable.)
+    prompt = trigger_translate_prompt(prompt_raw)
+    model  = (shot.get("animation_model") or DEFAULT_ANIMATION_MODEL).strip() or DEFAULT_ANIMATION_MODEL
 
     last_err: Exception | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        print(f"  [Path B] attempt {attempt}/{MAX_ATTEMPTS}")
+        print(f"  [Stage 2] attempt {attempt}/{MAX_ATTEMPTS}")
         try:
-            print(f"    animate: {VIDEO_MODEL} @ {vid_ratio}, {duration}s, "
+            print(f"    animate: {model} @ {vid_ratio}, {duration}s, "
                   f"keyframe={keyframe_uri[:80]}…")
-            an_task = submit_animation(keyframe_uri, prompt, vid_ratio, duration)
+            an_task = submit_animation(keyframe_uri, prompt, vid_ratio, duration, model=model)
             an_result = poll_task(an_task)
             video_url = first_output(an_result)
             if not video_url:
@@ -635,7 +826,7 @@ def run_path_b(shot: dict, prompt_raw: str, vid_ratio: str, duration: int,
                 status            = "review_pending",
                 asset_url         = video_url,
                 drive_folder_url  = folder_url or shot.get("drive_folder_url"),
-                review_notes      = (f"Path B: locked keyframe → an={an_task[:8]} v{next_version}"),
+                review_notes      = f"Stage 2: {model} → an={an_task[:8]} v{next_version}",
                 reviewer_feedback = None,
             )
             record_generation_run(shot, video_url, filename, folder_url, duration, keyframe_uri)
@@ -648,80 +839,9 @@ def run_path_b(shot: dict, prompt_raw: str, vid_ratio: str, duration: int,
 
     update_shot(
         db_id, status="revision_needed",
-        review_notes=f"Path B failed after {MAX_ATTEMPTS} attempts: {str(last_err)[:300]}",
+        review_notes=f"Animate failed after {MAX_ATTEMPTS}: {str(last_err)[:300]}",
     )
-    print(f"  FAILED — Path B exhausted")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Path C — text_to_image (with refs as influence) + image_to_video
-# ─────────────────────────────────────────────────────────────────────────────
-def run_path_c(shot: dict, prompt_raw: str, img_ratio: str, vid_ratio: str, duration: int,
-               base_name: str, drive_folder: str, db_id: str, next_version: int) -> None:
-    """
-    Drift-tolerant fallback. Used for 0-1 character shots where identity is not
-    critical (ambient, B-roll, prototyping). Multi-character shots are routed
-    to needs_keyframe instead — see route_shot().
-    """
-    try:
-        refs, warns = build_reference_images(shot)
-    except Exception as e:
-        update_shot(db_id, status="revision_needed",
-                    review_notes=f"Ref resolution failed: {str(e)[:400]}")
-        print(f"  FAILED during ref resolution: {e}")
-        return
-    for w in warns:
-        print(f"  ⚠  {w}")
-    print(f"  [Path C] refs ({len(refs)}): {[r['tag'] for r in refs]}")
-
-    prompt = normalize_prompt_tags(prompt_raw, refs)
-    for w in validate_prompt_against_refs(prompt, refs):
-        print(f"  ⚠  {w}")
-
-    last_err: Exception | None = None
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        print(f"  [Path C] attempt {attempt}/{MAX_ATTEMPTS}")
-        try:
-            print(f"    keyframe: {KEYFRAME_MODEL} @ {img_ratio}, refs={[r['tag'] for r in refs]}")
-            kf_task = submit_keyframe(prompt, refs, ratio=img_ratio)
-            kf_result = poll_task(kf_task)
-            keyframe_url = first_output(kf_result)
-            if not keyframe_url:
-                raise RuntimeError(f"Keyframe task succeeded but no output URL: {kf_result}")
-            print(f"    keyframe OK → {keyframe_url[:80]}…")
-
-            print(f"    animate:  {VIDEO_MODEL} @ {vid_ratio}, {duration}s")
-            an_task = submit_animation(keyframe_url, prompt, vid_ratio, duration)
-            an_result = poll_task(an_task)
-            video_url = first_output(an_result)
-            if not video_url:
-                raise RuntimeError(f"Animation task succeeded but no output URL: {an_result}")
-            print(f"    animate OK → {video_url[:80]}…")
-
-            filename = f"{base_name}.mp4"
-            folder_url = save_to_drive(drive_folder, filename, video_url)
-            update_shot(
-                db_id,
-                status            = "review_pending",
-                asset_url         = video_url,
-                drive_folder_url  = folder_url or shot.get("drive_folder_url"),
-                review_notes      = (f"Path C: kf={kf_task[:8]} an={an_task[:8]} "
-                                     f"refs=[{','.join(r['tag'] for r in refs)}] v{next_version}"),
-                reviewer_feedback = None,
-            )
-            record_generation_run(shot, video_url, filename, folder_url, duration, keyframe_url)
-            print(f"  DONE → v{next_version} → {video_url[:80]}…")
-            return
-        except Exception as e:
-            last_err = e
-            print(f"  attempt {attempt} failed: {e}")
-            time.sleep(5)
-
-    update_shot(
-        db_id, status="revision_needed",
-        review_notes=f"Path C failed after {MAX_ATTEMPTS} attempts: {str(last_err)[:300]}",
-    )
-    print(f"  FAILED — Path C exhausted")
+    print(f"  FAILED — animate exhausted")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

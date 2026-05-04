@@ -53,6 +53,27 @@
   .compose-card .compose-warn { color: #ff8a5a; }
   .compose-card .compose-fineprint { color: #8a7060; font-size: 11px; line-height: 1.6; margin-top: 6px; }
   .compose-card .compose-fineprint code { background: #2a1f10; padding: 1px 4px; border-radius: 3px; font-size: 10px; font-family: 'Courier New', monospace; color: #c8a880; }
+
+  /* Still card (LoRA-generated keyframe + edit + animate controls) */
+  .still-card { background: #0d1a2a; border: 1px solid #2b5d82; border-radius: 10px; padding: 14px; margin: 10px 0; max-width: 720px; display: flex; gap: 14px; align-items: flex-start; }
+  .still-card.pending { border-style: dashed; opacity: 0.85; }
+  .still-card-img-wrap { flex: 0 0 180px; }
+  .still-card-img { width: 180px; max-height: 320px; aspect-ratio: 9/16; object-fit: cover; border-radius: 7px; background: #050b14; display: block; cursor: pointer; }
+  .still-card-img-placeholder { width: 180px; height: 320px; border-radius: 7px; background: #050b14; display: flex; align-items: center; justify-content: center; color: #5b8a7a; font-size: 12px; text-align: center; padding: 12px; }
+  .still-card-body { flex: 1; min-width: 0; }
+  .still-card-label { font-size: 11px; color: #a0c8e8; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .still-card-prompt { width: 100%; min-height: 80px; resize: vertical; background: #050b14; color: #e8d5b0; border: 1px solid #2b5d82; padding: 8px 10px; border-radius: 5px; font-size: 11px; font-family: 'Courier New', monospace; line-height: 1.45; }
+  .still-card-prompt:focus { border-color: #5b8a7a; outline: none; }
+  .still-card-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .still-card-row select { background: #050b14; color: #e8d5b0; border: 1px solid #2b5d82; padding: 6px 8px; border-radius: 5px; font-size: 11px; }
+  .btn-still-regen { background: #c45a2c; color: white; border: none; padding: 8px 14px; border-radius: 5px; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .btn-still-regen:hover { opacity: 0.85; }
+  .btn-still-regen:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-still-animate { background: #2d8a4e; color: white; border: none; padding: 8px 16px; border-radius: 5px; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .btn-still-animate:hover { opacity: 0.85; }
+  .btn-still-animate:disabled { opacity: 0.4; cursor: not-allowed; }
+  .still-status-msg { font-size: 11px; color: #a0c8e8; font-style: italic; }
+  .still-card-meta { font-size: 11px; color: #6a8aaa; margin-top: 6px; }
   .compose-card .compose-or { color: #6a5040; font-size: 11px; text-align: center; margin: 10px 0; letter-spacing: 0.4px; text-transform: uppercase; }
   .compose-card .compose-drop { border: 2px dashed #4a3520; border-radius: 8px; padding: 18px 14px; text-align: center; color: #a08066; cursor: pointer; transition: all 0.15s; font-size: 12px; }
   .compose-card .compose-drop:hover, .compose-card .compose-drop.dragover { border-color: #b87333; background: #221813; color: #e8a060; }
@@ -100,6 +121,9 @@
   .status-in_post, .status-in_assembly { background: #d4a355; color: #1a2535; }
   .status-revision_needed { background: #c45a2c; color: white; }
   .status-needs_keyframe { background: #b87333; color: white; }
+  .status-still_pending { background: #2b5d82; color: white; }
+  .status-still_review { background: #2b5d82; color: white; }
+  .status-animating { background: #5b8a7a; color: white; }
   .status-final_review { background: #5b8a7a; color: white; }
   .status-complete, .status-shipped { background: #1a5a2a; color: white; }
 
@@ -299,7 +323,7 @@ function renderAll() {
   }
 
   // Count statuses
-  var counts = { approved: 0, pending: 0, rejected: 0, in_post: 0, revision_needed: 0, needs_keyframe: 0, total: shots.length };
+  var counts = { approved: 0, pending: 0, rejected: 0, in_post: 0, revision_needed: 0, needs_keyframe: 0, still_review: 0, total: shots.length };
   for (var i = 0; i < shots.length; i++) {
     var s = shots[i].status;
     if (s === 'approved') counts.approved++;
@@ -307,6 +331,7 @@ function renderAll() {
     else if (s === 'in_post' || s === 'in_assembly') counts.in_post++;
     else if (s === 'revision_needed') counts.revision_needed++;
     else if (s === 'needs_keyframe') counts.needs_keyframe++;
+    else if (s === 'still_review') counts.still_review++;
     else counts.pending++;
   }
 
@@ -337,6 +362,7 @@ function renderAll() {
   fb.innerHTML =
     '<button class="filter-btn' + (currentFilter === 'all' ? ' active' : '') + '" onclick="setFilter(\'all\',this)">All (' + counts.total + ')</button>' +
     '<button class="filter-btn' + (currentFilter === 'pending' ? ' active' : '') + '" onclick="setFilter(\'pending\',this)">Pending</button>' +
+    '<button class="filter-btn' + (currentFilter === 'still_review' ? ' active' : '') + '" onclick="setFilter(\'still_review\',this)">Still Review (' + counts.still_review + ')</button>' +
     '<button class="filter-btn' + (currentFilter === 'needs_keyframe' ? ' active' : '') + '" onclick="setFilter(\'needs_keyframe\',this)">Needs Keyframe</button>' +
     '<button class="filter-btn' + (currentFilter === 'revision_needed' ? ' active' : '') + '" onclick="setFilter(\'revision_needed\',this)">Revision Needed</button>' +
     '<button class="filter-btn' + (currentFilter === 'approved' ? ' active' : '') + '" onclick="setFilter(\'approved\',this)">Approved</button>' +
@@ -410,6 +436,13 @@ function renderAll() {
       html += renderComposeCard(shot);
     }
 
+    // Still card — Stage 1 output. Shows for still_pending / still_review,
+    // or any time a LoRA-generated still exists, so the user can re-edit/animate.
+    var stillStatuses = ['still_pending', 'still_review', 'animating'];
+    if (shot.keyframe_image_url || stillStatuses.indexOf(shot.status) !== -1) {
+      html += renderStillCard(shot);
+    }
+
     html += '<div class="videos-row">' + vhtml + '</div>';
 
     if (missingNote) html += '<div class="missing-asset">' + esc(missingNote) + '</div>';
@@ -425,8 +458,8 @@ function renderAll() {
     html += '</div>';
 
     // Shot actions — status dropdown + director button
-    var allStatuses = ['queued','needs_keyframe','generating','generated','review_pending','revision_needed','approved','rejected','in_assembly','in_post','final_review','complete','shipped'];
-    var statusLabels = {queued:'Queued',needs_keyframe:'Needs Keyframe',generating:'Generating',generated:'Generated',review_pending:'Review Pending',revision_needed:'Revision Needed',approved:'Approved',rejected:'Rejected',in_assembly:'In Assembly',in_post:'In Post',final_review:'Final Review',complete:'Complete',shipped:'Shipped'};
+    var allStatuses = ['queued','still_pending','still_review','needs_keyframe','animating','generating','generated','review_pending','revision_needed','approved','rejected','in_assembly','in_post','final_review','complete','shipped'];
+    var statusLabels = {queued:'Queued',still_pending:'Still Generating',still_review:'Still Review',needs_keyframe:'Needs Keyframe',animating:'Animating',generating:'Generating',generated:'Generated',review_pending:'Review Pending',revision_needed:'Revision Needed',approved:'Approved',rejected:'Rejected',in_assembly:'In Assembly',in_post:'In Post',final_review:'Final Review',complete:'Complete',shipped:'Shipped'};
     html += '<div class="shot-actions">';
     html += '<select class="status-select" onchange="changeStatus(\'' + shot.id + '\',this.value)">';
     for (var si = 0; si < allStatuses.length; si++) {
@@ -613,6 +646,112 @@ function approveDirector(id) {
     toast('Director signoff approved');
     loadData();
   }).catch(function(err) { toast(err.message, 'error'); });
+}
+
+// ── Still card (Stage 1: LoRA-generated keyframe + Animate gate) ──
+function renderStillCard(shot) {
+  var status = shot.status || '';
+  var still = shot.keyframe_image_url || '';
+  // Convert bare Drive ID or drive.google.com URL into the lh3 thumbnail form
+  // so the <img> can render directly. Pass-through for other URLs.
+  var imgSrc = '';
+  if (still) {
+    var driveIdMatch = still.match(/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]{20,})/);
+    if (driveIdMatch) imgSrc = 'https://lh3.googleusercontent.com/d/' + driveIdMatch[1] + '=s2048';
+    else if (/^[A-Za-z0-9_-]{20,}$/.test(still)) imgSrc = 'https://lh3.googleusercontent.com/d/' + still + '=s2048';
+    else imgSrc = still;
+  }
+
+  var pending = (status === 'still_pending');
+  var animating = (status === 'animating');
+  var canAnimate = !!still && !pending && !animating;
+
+  var html = '<div class="still-card' + (pending ? ' pending' : '') + '">';
+
+  // Image preview / placeholder
+  html += '<div class="still-card-img-wrap">';
+  if (imgSrc) {
+    html += '<img class="still-card-img" src="' + esc(imgSrc) + '" ';
+    html += 'onclick="window.open(\'' + esc(imgSrc) + '\',\'_blank\')" ';
+    html += 'alt="Generated still" loading="lazy">';
+  } else if (pending) {
+    html += '<div class="still-card-img-placeholder">Generating still…<br>~30–60s</div>';
+  } else {
+    html += '<div class="still-card-img-placeholder">No still yet</div>';
+  }
+  html += '</div>';
+
+  // Body — prompt editor + buttons
+  html += '<div class="still-card-body">';
+  html += '<div class="still-card-label">Stage 1 — Still keyframe';
+  if (pending) html += ' <span class="still-status-msg">(generating…)</span>';
+  else if (animating) html += ' <span class="still-status-msg">(animating clip…)</span>';
+  else if (status === 'still_review') html += ' <span class="still-status-msg">(review and approve)</span>';
+  html += '</div>';
+
+  html += '<textarea class="still-card-prompt" id="still-prompt-' + shot.id + '" ';
+  html += 'placeholder="Edit the prompt to regenerate the still (LoRA character names like MAYA_RM stay automatic)">';
+  html += esc(shot.runway_prompt || '');
+  html += '</textarea>';
+
+  html += '<div class="still-card-row">';
+  // Animation model selector — Seedance 2 default, gen4.5 / veo3.1 alternates
+  html += '<label style="font-size:11px;color:#a0c8e8;">Animator:</label>';
+  html += '<select id="still-model-' + shot.id + '">';
+  var animModel = shot.animation_model || 'seedance2';
+  var models = [['seedance2', 'Seedance 2 (default)'], ['gen4.5', 'Runway Gen-4.5'], ['veo3.1', 'Veo 3.1']];
+  for (var mi = 0; mi < models.length; mi++) {
+    html += '<option value="' + models[mi][0] + '"' + (animModel === models[mi][0] ? ' selected' : '') + '>' + models[mi][1] + '</option>';
+  }
+  html += '</select>';
+  html += '<button class="btn-still-regen" ';
+  html += (pending || animating ? 'disabled ' : '');
+  html += 'onclick="regenerateStill(\'' + shot.id + '\',this)">Regenerate Still</button>';
+  html += '<button class="btn-still-animate" ';
+  html += (canAnimate ? '' : 'disabled ');
+  html += 'onclick="animateStill(\'' + shot.id + '\',this)">Animate This Still →</button>';
+  html += '</div>';
+
+  if (still) {
+    html += '<div class="still-card-meta">Keyframe: <code>' + esc(still.length > 60 ? still.substring(0, 60) + '…' : still) + '</code></div>';
+  }
+  html += '</div>';   // body
+  html += '</div>';   // card
+  return html;
+}
+
+function regenerateStill(shotId, btn) {
+  var promptEl = document.getElementById('still-prompt-' + shotId);
+  if (btn) btn.disabled = true;
+  apiCall({
+    action: 'regenerate_still',
+    shot_id: shotId,
+    runway_prompt: promptEl ? promptEl.value : undefined,
+  }).then(function(resp) {
+    toast(resp && resp.render_triggered ? 'Regenerating still — ~60s' : 'Queued — cron will pick up');
+    loadData();
+  }).catch(function(err) {
+    if (btn) btn.disabled = false;
+    toast('Regenerate failed: ' + err.message, 'error');
+  });
+}
+
+function animateStill(shotId, btn) {
+  var promptEl = document.getElementById('still-prompt-' + shotId);
+  var modelEl  = document.getElementById('still-model-' + shotId);
+  if (btn) btn.disabled = true;
+  apiCall({
+    action: 'animate_still',
+    shot_id: shotId,
+    runway_prompt: promptEl ? promptEl.value : undefined,
+    animation_model: modelEl ? modelEl.value : undefined,
+  }).then(function(resp) {
+    toast(resp && resp.render_triggered ? 'Animating — ~3 min' : 'Queued — cron will pick up');
+    loadData();
+  }).catch(function(err) {
+    if (btn) btn.disabled = false;
+    toast('Animate failed: ' + err.message, 'error');
+  });
 }
 
 // ── Compose Keyframe card (Path B handoff) ──
