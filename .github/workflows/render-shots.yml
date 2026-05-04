@@ -39,8 +39,9 @@ jobs:
 
       - name: Render pending shots
         env:
-          SUPABASE_URL:     ${{ secrets.SUPABASE_URL     }}
-          SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY     }}
-          RUNWAY_API_KEY:   ${{ secrets.RUNWAY_API_KEY   }}
-          DRIVE_WEBAPP_URL: ${{ secrets.APPS_SCRIPT_URL  }}
+          SUPABASE_URL:        ${{ secrets.SUPABASE_URL        }}
+          SUPABASE_KEY:        ${{ secrets.SUPABASE_KEY        }}
+          RUNWAY_API_KEY:      ${{ secrets.RUNWAY_API_KEY      }}
+          DRIVE_WEBAPP_URL:    ${{ secrets.APPS_SCRIPT_URL     }}
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
         run: python3 run_batch_runway.py --auto
