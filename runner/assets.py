@@ -150,3 +150,19 @@ def all_loras_ready(names: list[str]) -> tuple[bool, list[str]]:
         if not lookup_lora(n):
             missing.append(n)
     return (not missing, missing)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  INSERT_MODEL — Replicate model used for shots without characters
+#  (insert/establishing/match_cut). Pure prompt → still, no character LoRAs.
+#
+#  Default points at the public flux-schnell (cheap, fast, ~$0.003/image). Once
+#  you train a Roommates STYLE LoRA, swap in here so inserts match the show's
+#  visual language without burning a character LoRA slot.
+# ─────────────────────────────────────────────────────────────────────────────
+INSERT_MODEL: dict = {
+    "lora": "black-forest-labs/flux-schnell",
+    "version": None,
+    "trigger": "",                        # no trigger word for insert/style
+    "extra_input": {"num_inference_steps": 4},   # flux-schnell cap
+}

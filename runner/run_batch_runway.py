@@ -51,7 +51,7 @@ from pathlib import Path
 # Local registry — single source of truth for character/scene images and LoRAs.
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from assets import (  # noqa: E402
-    CHARACTERS, SCENES, CHARACTER_LORAS,
+    CHARACTERS, SCENES, CHARACTER_LORAS, INSERT_MODEL,
     lookup_character, lookup_scene, lookup_lora, all_loras_ready,
 )
 
@@ -525,32 +525,114 @@ def parse_chars(raw: str | None) -> list[str]:
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-shot-type editorial defaults — used when DB columns are unset.
+# ─────────────────────────────────────────────────────────────────────────────
+SHOT_TYPE_DEFAULTS: dict[str, dict] = {
+    "establishing":     {"duration": 4,  "motion_intensity": "low"},
+    "character_single": {"duration": 3,  "motion_intensity": "medium"},
+    "two_shot":         {"duration": 6,  "motion_intensity": "medium"},
+    "ensemble":         {"duration": 5,  "motion_intensity": "low"},   # 3-5 chars (band)
+    "insert":           {"duration": 2,  "motion_intensity": "low"},
+    "performance":      {"duration": 10, "motion_intensity": "low"},
+    "match_cut":        {"duration": 2,  "motion_intensity": "high"},
+    # Legacy fallbacks
+    "environment":      {"duration": 4,  "motion_intensity": "low"},
+    "dialogue":         {"duration": 4,  "motion_intensity": "medium"},
+    "notation":         {"duration": 3,  "motion_intensity": "low"},
+    "montage":          {"duration": 2,  "motion_intensity": "high"},
+}
+
+# Shot types that DON'T need character LoRAs — pure prompt → still.
+NO_CHARACTER_SHOT_TYPES = {"insert", "establishing", "match_cut", "environment"}
+
+# Replicate FLUX-LoRA stacking quality drops past 2 LoRAs. Any shot with more
+# characters than this routes to needs_keyframe (human composite).
+MAX_LORA_STACK = 2
+
+# Translates motion_intensity into a short suffix appended to the animation
+# prompt. Empty string for medium (default; no extra hint).
+MOTION_PROMPT_SUFFIX: dict[str, str] = {
+    "low":    " Camera holds nearly still; subtle ambient motion only.",
+    "medium": "",
+    "high":   " Camera pushes in or pans with quick, deliberate motion.",
+}
+
+
+def shot_type_default(shot: dict, key: str):
+    st = (shot.get("shot_type") or "").strip()
+    return SHOT_TYPE_DEFAULTS.get(st, {}).get(key)
+
+
+def effective_duration(shot: dict) -> int:
+    """API duration to send to image_to_video. Honors duration_seconds, then
+    target_duration_seconds, then per-shot-type default, then VIDEO_DURATION.
+    Clamps to [2, 10] (gen4.5/Seedance2 limits)."""
+    raw = shot.get("duration_seconds")
+    if raw is None:
+        raw = shot.get("target_duration_seconds")
+    if raw is None:
+        raw = shot_type_default(shot, "duration")
+    if raw is None:
+        raw = VIDEO_DURATION
+    return max(2, min(int(round(float(raw))), 10))
+
+
+def effective_motion(shot: dict) -> str:
+    return (shot.get("motion_intensity")
+            or shot_type_default(shot, "motion_intensity")
+            or "medium")
+
+
+def apply_motion_to_prompt(prompt: str, intensity: str) -> str:
+    """Append a short directive based on motion_intensity, unless the prompt
+    already has explicit camera language."""
+    if not prompt:
+        return prompt
+    suffix = MOTION_PROMPT_SUFFIX.get(intensity, "")
+    if not suffix:
+        return prompt
+    if any(token in prompt.lower() for token in ("camera ", "push ", "pan ", "drift", "zoom ")):
+        return prompt   # author already specified — don't override
+    return prompt + suffix
+
+
 def route_shot(shot: dict) -> str:
     """
     Route a runway-tool shot to one of these paths:
 
-      "animate"        — keyframe locked + status=revision_needed: run image_to_video.
-                         The user has approved the still; produce the clip.
-      "generate_still" — no keyframe + characters' LoRAs all trained: call Replicate
-                         to produce a still. User reviews before animating.
-      "needs_keyframe" — no keyframe + missing/no LoRAs: human uploads still manually.
-      "legacy_C"       — characters present without LoRAs and shot has scene/refs;
-                         fall back to text_to_image + image_to_video pipeline. Drift.
+      "animate"          — keyframe locked: run image_to_video (Stage 2).
+      "generate_still"   — no keyframe + characters' LoRAs all trained: call
+                           Replicate with character LoRAs (Stage 1).
+      "generate_insert"  — no keyframe + shot_type is character-free (insert,
+                           establishing, environment, match_cut): call Replicate
+                           with the INSERT_MODEL (no LoRAs needed).
+      "needs_keyframe"   — fallback: human uploads still manually.
 
-    Path A (omnihuman) is handled by run_batch.py.
+    Path A (omnihuman) is handled by run_batch.py, not this runner.
     """
-    has_kf  = bool((shot.get("keyframe_image_url") or "").strip())
-    chars   = parse_chars(shot.get("characters_used"))
-    status  = (shot.get("status") or "").strip()
+    has_kf    = bool((shot.get("keyframe_image_url") or "").strip())
+    chars     = parse_chars(shot.get("characters_used"))
+    shot_type = (shot.get("shot_type") or "").strip()
 
-    if has_kf and status == "revision_needed":
-        return "animate"
     if has_kf:
-        # Keyframe set but status is queued — also animate (handles fresh queue
-        # entries that already came in with a keyframe pre-populated)
         return "animate"
+
+    # Character-free shot types use the INSERT_MODEL — no LoRAs needed.
+    if shot_type in NO_CHARACTER_SHOT_TYPES and not chars:
+        if INSERT_MODEL.get("lora"):
+            return "generate_insert"
+        return "needs_keyframe"
+
     if not chars:
         return "needs_keyframe"
+
+    # Ensemble / multi-char beyond stack limit can't be auto-generated reliably
+    # — even with all LoRAs trained, FLUX stacking past 2 produces mush. Route
+    # those to manual composition (Photoshop/Photopea/Runway UI).
+    if len(chars) > MAX_LORA_STACK:
+        return "needs_keyframe"
+
     ready, _ = all_loras_ready(chars)
     if ready:
         return "generate_still"
@@ -572,7 +654,11 @@ def process_shot(shot: dict) -> None:
     if path == "needs_keyframe":
         chars = parse_chars(shot.get("characters_used"))
         ready, missing = all_loras_ready(chars)
-        if missing and chars:
+        if len(chars) > MAX_LORA_STACK:
+            note = (f"Ensemble shot ({len(chars)} characters: {', '.join(chars)}). "
+                    f"FLUX-LoRA stacking unreliable past {MAX_LORA_STACK} characters — "
+                    f"compose this still manually (Runway UI / Photoshop) and upload.")
+        elif missing and chars:
             note = (f"LoRAs not trained for {', '.join(missing)}. Train via Replicate or "
                     f"upload a manual keyframe.")
         elif not chars:
@@ -591,7 +677,9 @@ def process_shot(shot: dict) -> None:
 
     img_ratio = image_ratio_for(shot)
     vid_ratio = video_ratio_for(img_ratio)
-    duration  = max(2, min(int(shot.get("duration_seconds") or VIDEO_DURATION), 10))
+    duration  = effective_duration(shot)
+    intensity = effective_motion(shot)
+    print(f"  shot_type={shot.get('shot_type') or '(unset)'}  duration={duration}s  motion={intensity}")
     next_version = count_existing_runs(db_id) + 1
     base_name    = f"{song.replace(' ', '')}_{name.replace(' ', '')}_v{next_version}"
     drive_folder = f"{song} - Generated Shots"
@@ -601,9 +689,17 @@ def process_shot(shot: dict) -> None:
         run_replicate_still(shot, prompt_raw, img_ratio, db_id)
         return
 
+    if path == "generate_insert":
+        update_shot(db_id, status="still_pending")
+        run_replicate_insert(shot, prompt_raw, img_ratio, db_id)
+        return
+
     if path == "animate":
         update_shot(db_id, status="animating")
-        run_animate_keyframe(shot, prompt_raw, vid_ratio, duration,
+        # For animation, apply motion-intensity hint to the prompt unless the
+        # author already specified camera language.
+        animation_prompt = apply_motion_to_prompt(prompt_raw, intensity)
+        run_animate_keyframe(shot, animation_prompt, vid_ratio, duration,
                              base_name, drive_folder, db_id, next_version)
         return
 
@@ -711,6 +807,45 @@ def poll_replicate(prediction_id: str) -> dict:
         if time.time() - started > POLL_TIMEOUT:
             raise TimeoutError(f"Replicate {prediction_id} stuck in {state} after {POLL_TIMEOUT}s")
         time.sleep(POLL_INTERVAL)
+
+
+def run_replicate_insert(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
+    """
+    Stage 1 for character-free shot types (insert / establishing / match_cut /
+    environment). Uses INSERT_MODEL (a generic Replicate model) — no LoRAs.
+    The prompt should describe the object/setting; no @-tags expected.
+    """
+    aspect = replicate_aspect_ratio_for(img_ratio)
+    print(f"  [Stage 1 / insert] {INSERT_MODEL['lora']} aspect={aspect}")
+    print(f"           prompt={prompt_raw[:120]}…")
+
+    last_err: Exception | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            pred_id = submit_replicate_still(prompt_raw, [INSERT_MODEL], aspect)
+            print(f"  [Stage 1 / insert] prediction {pred_id}")
+            result = poll_replicate(pred_id)
+            output = result.get("output")
+            still_url = output[0] if isinstance(output, list) and output else output
+            if not still_url:
+                raise RuntimeError(f"Replicate succeeded with no output URL: {result}")
+            print(f"  [Stage 1 / insert] still OK → {still_url[:80]}…")
+
+            update_shot(
+                db_id,
+                status             = "still_review",
+                keyframe_image_url = still_url,
+                review_notes       = f"Stage 1 insert: {INSERT_MODEL['lora']} {pred_id[:8]}",
+            )
+            return
+        except Exception as e:
+            last_err = e
+            print(f"  [Stage 1 / insert] attempt {attempt} failed: {e}")
+            time.sleep(3)
+
+    update_shot(db_id, status="revision_needed",
+                review_notes=f"Insert still failed after {MAX_ATTEMPTS}: {str(last_err)[:300]}")
+    print(f"  FAILED — insert still exhausted")
 
 
 def run_replicate_still(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
