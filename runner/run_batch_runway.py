@@ -601,13 +601,14 @@ def route_shot(shot: dict) -> str:
     """
     Route a runway-tool shot to one of these paths:
 
-      "animate"          — keyframe locked: run image_to_video (Stage 2).
-      "generate_still"   — no keyframe + characters' LoRAs all trained: call
-                           Replicate with character LoRAs (Stage 1).
-      "generate_insert"  — no keyframe + shot_type is character-free (insert,
-                           establishing, environment, match_cut): call Replicate
-                           with the INSERT_MODEL (no LoRAs needed).
-      "needs_keyframe"   — fallback: human uploads still manually.
+      "animate"           — keyframe locked: run image_to_video (Stage 2).
+      "generate_still"    — no keyframe + 1-2 chars' LoRAs trained: call Replicate
+                            with character LoRAs stacked (Stage 1).
+      "generate_insert"   — no keyframe + character-free shot type: INSERT_MODEL.
+      "compose_kit"       — no keyframe + 3+ chars + all LoRAs trained: auto-
+                            generate a composition kit (backdrop + per-character
+                            solo stills) for the user to assemble manually.
+      "needs_keyframe"    — fallback: human uploads still manually.
 
     Path A (omnihuman) is handled by run_batch.py, not this runner.
     """
@@ -627,10 +628,15 @@ def route_shot(shot: dict) -> str:
     if not chars:
         return "needs_keyframe"
 
-    # Ensemble / multi-char beyond stack limit can't be auto-generated reliably
-    # — even with all LoRAs trained, FLUX stacking past 2 produces mush. Route
-    # those to manual composition (Photoshop/Photopea/Runway UI).
+    # Ensemble: 3+ characters. FLUX-LoRA stacking past 2 falls apart, but we
+    # CAN auto-generate the composition kit (backdrop + per-character solo
+    # stills) so the user has every piece ready for manual compositing in
+    # Photopea/Photoshop. Only do this if all LoRAs are trained — otherwise
+    # there's nothing to generate per-character with.
     if len(chars) > MAX_LORA_STACK:
+        ready, _ = all_loras_ready(chars)
+        if ready and INSERT_MODEL.get("lora"):
+            return "compose_kit"
         return "needs_keyframe"
 
     ready, _ = all_loras_ready(chars)
@@ -692,6 +698,12 @@ def process_shot(shot: dict) -> None:
     if path == "generate_insert":
         update_shot(db_id, status="still_pending")
         run_replicate_insert(shot, prompt_raw, img_ratio, db_id)
+        return
+
+    if path == "compose_kit":
+        update_shot(db_id, status="still_pending",
+                    review_notes="Building composition kit (backdrop + per-character stills)…")
+        run_compose_kit(shot, prompt_raw, img_ratio, db_id)
         return
 
     if path == "animate":
@@ -807,6 +819,93 @@ def poll_replicate(prediction_id: str) -> dict:
         if time.time() - started > POLL_TIMEOUT:
             raise TimeoutError(f"Replicate {prediction_id} stuck in {state} after {POLL_TIMEOUT}s")
         time.sleep(POLL_INTERVAL)
+
+
+def run_compose_kit(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
+    """
+    Ensemble (3+ character) composition kit generator.
+
+    Replicate has no LoRA-loaded inpainting model that can iteratively place
+    multiple characters with each character's LoRA active. Stacking 3+ LoRAs
+    in one FLUX call produces mush. So instead, we auto-generate every piece
+    the user needs to compose the keyframe by hand:
+
+        • backdrop  — empty stage / setting via INSERT_MODEL (no characters)
+        • per-char  — each character solo via their own LoRA, no stacking,
+                      ideally on a clean background that's easy to mask out
+
+    The kit is saved to Drive, the asset URLs land in production_queue.composition_kit,
+    and the shot flips to needs_keyframe so the dashboard surfaces a "Compose
+    in Photopea" UI.
+    """
+    chars = parse_chars(shot.get("characters_used"))
+    aspect = replicate_aspect_ratio_for(img_ratio)
+
+    # 1. Backdrop — describe the setting only, NO characters.
+    backdrop_prompt = (
+        f"{prompt_raw}, no characters, empty composition, "
+        f"clean stage / setting, illustration style"
+    )
+    print(f"  [Compose Kit] backdrop via {INSERT_MODEL['lora']}")
+    backdrop_url = None
+    try:
+        pred = submit_replicate_still(backdrop_prompt, [INSERT_MODEL], aspect)
+        result = poll_replicate(pred)
+        backdrop_url = first_output(result)
+        if not backdrop_url:
+            raise RuntimeError(f"backdrop returned no output: {result}")
+        print(f"  [Compose Kit] backdrop OK → {backdrop_url[:80]}…")
+    except Exception as e:
+        update_shot(db_id, status="needs_keyframe",
+                    review_notes=f"Backdrop generation failed: {str(e)[:300]}. "
+                                 f"Compose this ensemble shot ({len(chars)} chars) manually.")
+        print(f"  [Compose Kit] FAILED on backdrop: {e}")
+        return
+
+    # 2. Per-character solo stills. Each call loads ONE LoRA — no stacking.
+    char_assets: list[dict] = []
+    for name in chars:
+        info = lookup_lora(name)
+        if not info:
+            char_assets.append({"name": name, "url": None, "error": "LoRA not trained"})
+            continue
+        # Solo prompt — drop @-tags from the original prompt, just summon the
+        # character isolated. The user composes them together later.
+        solo_prompt = (
+            f"{info['trigger']}, isolated portrait against a plain neutral background, "
+            f"full body visible, illustration style, eye level, 9:16"
+        )
+        print(f"  [Compose Kit] character {name} via {info['lora']}")
+        try:
+            pred = submit_replicate_still(solo_prompt, [info], aspect)
+            result = poll_replicate(pred)
+            url = first_output(result)
+            if not url:
+                raise RuntimeError(f"{name} returned no output: {result}")
+            print(f"  [Compose Kit] {name} OK → {url[:80]}…")
+            char_assets.append({"name": name, "url": url})
+        except Exception as e:
+            print(f"  [Compose Kit] {name} FAILED: {e}")
+            char_assets.append({"name": name, "url": None, "error": str(e)[:200]})
+
+    # 3. Save kit to DB. Status → needs_keyframe so dashboard surfaces compose UI.
+    successful = sum(1 for c in char_assets if c.get("url"))
+    composition_kit = {
+        "backdrop_url": backdrop_url,
+        "characters":   char_assets,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    note = (f"Composition kit ready: backdrop + {successful}/{len(chars)} characters. "
+            f"Open in Photopea, compose, drop the result back here.")
+    if successful < len(chars):
+        note += f" (Some character stills failed — see kit data.)"
+    update_shot(
+        db_id,
+        status            = "needs_keyframe",
+        composition_kit   = composition_kit,
+        review_notes      = note,
+    )
+    print(f"  [Compose Kit] DONE — {successful}/{len(chars)} characters; status=needs_keyframe")
 
 
 def run_replicate_insert(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:

@@ -54,6 +54,21 @@
   .compose-card .compose-fineprint { color: #8a7060; font-size: 11px; line-height: 1.6; margin-top: 6px; }
   .compose-card .compose-fineprint code { background: #2a1f10; padding: 1px 4px; border-radius: 3px; font-size: 10px; font-family: 'Courier New', monospace; color: #c8a880; }
 
+  /* Composition kit (auto-generated for ensemble shots) */
+  .kit-section { background: #221813; border: 1px solid #4a3520; border-radius: 8px; padding: 12px; margin-top: 12px; }
+  .kit-title { font-size: 11px; color: #e8a060; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+  .kit-grid { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
+  .kit-asset { width: 120px; text-align: center; }
+  .kit-asset img { width: 120px; height: 200px; object-fit: cover; border-radius: 5px; background: #050b14; cursor: pointer; border: 1px solid #4a3520; transition: border-color 0.15s; }
+  .kit-asset img:hover { border-color: #b87333; }
+  .kit-asset .kit-label { font-size: 11px; color: #d4a355; font-weight: 700; margin-top: 4px; }
+  .kit-asset .kit-failed { width: 120px; height: 200px; border-radius: 5px; background: #2a0a0a; border: 1px dashed #8b3a1f; display: flex; align-items: center; justify-content: center; color: #e8a060; font-size: 11px; padding: 10px; text-align: center; }
+  .kit-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .btn-kit-photopea { background: #5b8a7a; color: white; border: none; padding: 8px 14px; border-radius: 5px; font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; }
+  .btn-kit-photopea:hover { opacity: 0.85; }
+  .btn-kit-copy { background: #4a3520; color: #e8d5b0; border: none; padding: 6px 12px; border-radius: 5px; font-size: 11px; font-weight: 700; cursor: pointer; }
+  .btn-kit-copy:hover { background: #5a4530; }
+
   /* Still card (LoRA-generated keyframe + edit + animate controls) */
   .still-card { background: #0d1a2a; border: 1px solid #2b5d82; border-radius: 10px; padding: 14px; margin: 10px 0; max-width: 720px; display: flex; gap: 14px; align-items: flex-start; }
   .still-card.pending { border-style: dashed; opacity: 0.85; }
@@ -830,16 +845,24 @@ function renderComposeCard(shot) {
   var html = '<div class="compose-card" data-shot-id="' + shot.id + '">';
   html += '<h3>Compose Keyframe — ' + chars.length + ' character' + (chars.length===1?'':'s') + ' needed</h3>';
 
-  html += '<div class="compose-hint"><b>The exact steps:</b></div>';
-  html += '<ol class="compose-steps">';
-  html += '<li>Click <b>Copy prompt</b> below, then <b>Open Runway</b> and pick <b>Image Tool</b> or <b>Scene Builder</b>.</li>';
-  html += '<li>Attach character references and tag them <code>' + esc(chars.map(function(c){return '@'+c.toLowerCase();}).join(' ') || '(none)') + '</code>';
-  if (scene) html += ' plus scene <code>@' + esc(scene) + '</code>';
-  html += '. Paste the prompt. Generate until it looks right (~30s).</li>';
-  html += '<li><b>Right-click the result image → Save Image As</b> → save into your Drive folder. <span class="compose-warn">Do NOT use Runway\'s "Share with anyone" link — that\'s a webpage, not an image, and the runner can\'t fetch it.</span></li>';
-  html += '<li>Open the file in Drive, copy its <b>file ID</b> from the URL (the long string between <code>/d/</code> and <code>/view</code>).</li>';
-  html += '<li>Paste the file ID below and click <b>Apply Keyframe</b>.</li>';
-  html += '</ol>';
+  // Composition kit — auto-generated for ensemble (3+ char) shots. Shows
+  // the backdrop + each character solo PNG so the user can compose them
+  // together in Photopea/Photoshop without having to generate the pieces.
+  var kit = shot.composition_kit;
+  if (kit && (kit.backdrop_url || (kit.characters && kit.characters.length))) {
+    html += renderCompositionKit(shot, kit);
+  } else {
+    html += '<div class="compose-hint"><b>The exact steps:</b></div>';
+    html += '<ol class="compose-steps">';
+    html += '<li>Click <b>Copy prompt</b> below, then <b>Open Runway</b> and pick <b>Image Tool</b> or <b>Scene Builder</b>.</li>';
+    html += '<li>Attach character references and tag them <code>' + esc(chars.map(function(c){return '@'+c.toLowerCase();}).join(' ') || '(none)') + '</code>';
+    if (scene) html += ' plus scene <code>@' + esc(scene) + '</code>';
+    html += '. Paste the prompt. Generate until it looks right (~30s).</li>';
+    html += '<li><b>Right-click the result image → Save Image As</b> → save into your Drive folder. <span class="compose-warn">Do NOT use Runway\'s "Share with anyone" link — that\'s a webpage, not an image, and the runner can\'t fetch it.</span></li>';
+    html += '<li>Open the file in Drive, copy its <b>file ID</b> from the URL (the long string between <code>/d/</code> and <code>/view</code>).</li>';
+    html += '<li>Paste the file ID below and click <b>Apply Keyframe</b>.</li>';
+    html += '</ol>';
+  }
 
   html += '<div class="compose-section-label">Prompt (copy into Runway)</div>';
   html += '<div class="compose-prompt" id="compose-prompt-' + shot.id + '">' + esc(prompt) + '</div>';
@@ -875,6 +898,63 @@ function renderComposeCard(shot) {
   html += '</div>';
   html += '</div>';
   return html;
+}
+
+function renderCompositionKit(shot, kit) {
+  var html = '<div class="kit-section">';
+  html += '<div class="kit-title">Composition Kit — assembled by the runner. Combine in Photopea/Photoshop.</div>';
+  html += '<div class="kit-grid">';
+
+  // Backdrop first
+  if (kit.backdrop_url) {
+    html += '<div class="kit-asset">';
+    html += '<img src="' + esc(kit.backdrop_url) + '" onclick="window.open(\'' + esc(kit.backdrop_url) + '\',\'_blank\')" alt="backdrop">';
+    html += '<div class="kit-label">Backdrop</div>';
+    html += '</div>';
+  }
+
+  // Per-character solo stills
+  var characters = kit.characters || [];
+  for (var i = 0; i < characters.length; i++) {
+    var c = characters[i];
+    html += '<div class="kit-asset">';
+    if (c.url) {
+      html += '<img src="' + esc(c.url) + '" onclick="window.open(\'' + esc(c.url) + '\',\'_blank\')" alt="' + esc(c.name) + '">';
+    } else {
+      html += '<div class="kit-failed">' + esc(c.name) + ' failed: ' + esc((c.error || 'no output').substring(0, 60)) + '</div>';
+    }
+    html += '<div class="kit-label">' + esc(c.name) + '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="kit-actions">';
+  html += '<a class="btn-kit-photopea" href="https://www.photopea.com" target="_blank" rel="noopener">Open Photopea →</a>';
+  html += '<button class="btn-kit-copy" onclick="copyKitUrls(\'' + shot.id + '\')">Copy all asset URLs</button>';
+  if (kit.generated_at) {
+    html += '<span style="font-size:10px;color:#8a7060;margin-left:8px;align-self:center">generated ' + new Date(kit.generated_at).toLocaleString() + '</span>';
+  }
+  html += '</div>';
+
+  html += '<div class="compose-hint" style="margin-top:12px"><b>How to use:</b> open Photopea (free, in-browser). File → Open URL → paste the backdrop. Then File → Open URL again for each character; cut them out (magic wand on the plain background, delete) and drag onto the backdrop. Save as PNG. Drop the result in the upload area below.</div>';
+  html += '</div>';
+  return html;
+}
+
+function copyKitUrls(shotId) {
+  var shot = (allData.shots || []).find(function(s){ return s.id === shotId; });
+  if (!shot || !shot.composition_kit) { toast('No kit for this shot', 'error'); return; }
+  var kit = shot.composition_kit;
+  var lines = [];
+  if (kit.backdrop_url) lines.push('Backdrop: ' + kit.backdrop_url);
+  for (var i = 0; i < (kit.characters || []).length; i++) {
+    var c = kit.characters[i];
+    if (c.url) lines.push(c.name + ': ' + c.url);
+  }
+  navigator.clipboard.writeText(lines.join('\n')).then(
+    function(){ toast(lines.length + ' kit URLs copied'); },
+    function(){ toast('Copy failed', 'error'); }
+  );
 }
 
 function copyComposePrompt(shotId) {
