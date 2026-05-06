@@ -37,14 +37,17 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import os
 import re
 import ssl
+import struct
 import sys
 import time
 import urllib.parse
 import urllib.request
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -607,13 +610,16 @@ def route_shot(shot: dict) -> str:
     Route a runway-tool shot to one of these paths:
 
       "animate"           — keyframe locked: run image_to_video (Stage 2).
-      "generate_still"    — no keyframe + 1-2 chars' LoRAs trained: call Replicate
-                            with character LoRAs stacked (Stage 1).
+      "generate_still"    — no keyframe + 1 char's LoRA trained: call Replicate
+                            with that character's LoRA (Stage 1).
       "generate_insert"   — no keyframe + character-free shot type: INSERT_MODEL.
-      "compose_kit"       — no keyframe + 3+ chars + all LoRAs trained: auto-
-                            generate a composition kit (backdrop + per-character
-                            solo stills) for the user to assemble manually.
-      "needs_keyframe"    — fallback: human uploads still manually.
+      "inpaint_compose"   — no keyframe + 2+ chars + all LoRAs trained: iterative
+                            inpaint pipeline. Each character painted in by their
+                            own LoRA — identity preserved, no manual compositing.
+      "compose_kit"       — fallback when inpaint_compose isn't applicable: auto-
+                            generate per-character solo stills + backdrop, user
+                            assembles in Photopea.
+      "needs_keyframe"    — last resort: human uploads still manually.
 
     Path A (omnihuman) is handled by run_batch.py, not this runner.
     """
@@ -633,20 +639,24 @@ def route_shot(shot: dict) -> str:
     if not chars:
         return "needs_keyframe"
 
-    # Ensemble: 3+ characters. FLUX-LoRA stacking past 2 falls apart, but we
-    # CAN auto-generate the composition kit (backdrop + per-character solo
-    # stills) so the user has every piece ready for manual compositing in
-    # Photopea/Photoshop. Only do this if all LoRAs are trained — otherwise
-    # there's nothing to generate per-character with.
-    if len(chars) > MAX_LORA_STACK:
-        ready, _ = all_loras_ready(chars)
-        if ready and INSERT_MODEL.get("lora"):
-            return "compose_kit"
+    # Single character — vanilla single-LoRA generation.
+    if len(chars) == 1:
+        if all_loras_ready(chars)[0]:
+            return "generate_still"
         return "needs_keyframe"
 
+    # Multi-character — iterative inpaint compose if all LoRAs are ready.
+    # Each character is painted in by their own LoRA (one LoRA per call) so
+    # we never run into the LoRA-stacking problem.
     ready, _ = all_loras_ready(chars)
     if ready:
-        return "generate_still"
+        return "inpaint_compose"
+
+    # Some LoRAs missing — fall back to compose_kit (per-trained-char solo +
+    # backdrop, user composites manually) IF we at least have an INSERT_MODEL
+    # for the backdrop. Otherwise full manual.
+    if INSERT_MODEL.get("lora"):
+        return "compose_kit"
     return "needs_keyframe"
 
 
@@ -709,6 +719,12 @@ def process_shot(shot: dict) -> None:
         update_shot(db_id, status="still_pending",
                     review_notes="Building composition kit (backdrop + per-character stills)…")
         run_compose_kit(shot, prompt_raw, img_ratio, db_id)
+        return
+
+    if path == "inpaint_compose":
+        update_shot(db_id, status="still_pending",
+                    review_notes=f"Iterative inpaint compose ({len(parse_chars(shot.get('characters_used')))} chars)…")
+        run_inpaint_compose(shot, prompt_raw, img_ratio, db_id)
         return
 
     if path == "animate":
@@ -857,6 +873,239 @@ def poll_replicate(prediction_id: str) -> dict:
         if time.time() - started > POLL_TIMEOUT:
             raise TimeoutError(f"Replicate {prediction_id} stuck in {state} after {POLL_TIMEOUT}s")
         time.sleep(POLL_INTERVAL)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Iterative inpainting (multi-character composition without LoRA stacking)
+#
+#  Replicate's FLUX-LoRA-trainer outputs accept image+mask inputs natively —
+#  meaning each trained character LoRA is also a single-character inpainting
+#  model. We exploit that:
+#
+#    Pass 1: generate first character full-frame via their LoRA (no mask).
+#    Pass 2..N: for each subsequent character, build a mask of their region,
+#               submit prediction to THAT character's LoRA with image=current
+#               canvas + mask=their region. Each pass loads ONE LoRA so
+#               identity stays pixel-perfect.
+#
+#  The user's "iterative inpainting" goal — without needing a separate
+#  inpainting model and without manual Photoshop compositing.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _read_png_dims(url: str) -> tuple[int, int]:
+    """Read width/height from the IHDR chunk of a PNG without buffering the
+    whole image. Replicate FLUX outputs are PNG by default."""
+    req = urllib.request.Request(url, headers={"User-Agent": "roommates-runner/1.0"})
+    with urllib.request.urlopen(req, timeout=60, context=_SSL_CTX) as resp:
+        head = resp.read(24)
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        raise RuntimeError(f"Not a PNG (or truncated): {url[:80]}")
+    width, height = struct.unpack(">II", head[16:24])
+    return width, height
+
+
+def _make_band_mask_png(width: int, height: int, x_start: int, x_end: int,
+                        feather: int = 32) -> bytes:
+    """
+    Pure-Python PNG generator for a vertical-band inpainting mask.
+
+    White (255) inside [x_start, x_end] = "inpaint here".
+    Black (0) elsewhere = "preserve".
+    Soft-feathered edges (linear ramp over `feather` px on each side) so the
+    inpainted region blends smoothly instead of cutting hard.
+    """
+    if x_end <= x_start:
+        raise ValueError(f"empty band: [{x_start}, {x_end})")
+    x_start = max(0, x_start)
+    x_end = min(width, x_end)
+    fl = max(0, x_start - feather)
+    fr = min(width, x_end + feather)
+
+    # Build one row — mask is column-only so all rows are identical.
+    row = bytearray()
+    row.append(0)  # PNG filter type: none
+    for x in range(width):
+        if x < fl or x >= fr:
+            v = 0
+        elif x_start <= x < x_end:
+            v = 255
+        elif x < x_start:           # left feather
+            v = int(255 * (x - fl) / max(feather, 1))
+        else:                        # right feather
+            v = int(255 * (fr - x) / max(feather, 1))
+        row.append(max(0, min(255, v)))
+    raw = bytes(row) * height
+    compressed = zlib.compress(raw, 9)
+
+    def chunk(name: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + name + data
+                + struct.pack(">I", zlib.crc32(name + data) & 0xFFFFFFFF))
+
+    sig  = b"\x89PNG\r\n\x1a\n"
+    # IHDR: width, height, bit_depth=8, color_type=0 (grayscale), compression=0, filter=0, interlace=0
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", compressed) + chunk(b"IEND", b"")
+
+
+def _band_for_position(idx: int, total: int, width: int) -> tuple[int, int]:
+    """Even vertical bands. position 0 is leftmost."""
+    band = width // total
+    return idx * band, (idx + 1) * band if idx < total - 1 else width
+
+
+def _position_phrase(idx: int, total: int) -> str:
+    """English description of where this character should stand. Used in the
+    prompt to guide the LoRA's placement during the initial full-frame pass."""
+    if total <= 1:
+        return "centered in the frame"
+    if total == 2:
+        return ["on the left side of the frame", "on the right side of the frame"][idx]
+    if total == 3:
+        return ["on the far left", "in the center of the frame", "on the far right"][idx]
+    if total == 4:
+        slots = ["on the far left", "left of center", "right of center", "on the far right"]
+        return slots[idx]
+    # 5+
+    slots = ["on the far left", "left of center", "in the center of the frame",
+             "right of center", "on the far right"]
+    return slots[min(idx, len(slots) - 1)]
+
+
+def submit_replicate_inpaint(prompt: str, lora_info: dict, image_url: str,
+                              mask_data_uri: str) -> str:
+    """
+    Submit an inpainting prediction to a single character LoRA. The LoRA's
+    own model schema (image + mask) handles the inpaint — no separate inpainting
+    model needed.
+    """
+    if not REPLICATE_API_TOKEN:
+        raise RuntimeError("REPLICATE_API_TOKEN not set")
+    inp: dict = {
+        "prompt":          prompt,
+        "image":           image_url,
+        "mask":            mask_data_uri,
+        "output_format":   "png",
+        "num_outputs":     1,
+        "prompt_strength": 0.85,
+    }
+    inp.update(lora_info.get("extra_input") or {})
+    version = lora_info.get("version") or _replicate_latest_version(lora_info["lora"])
+    body = {"version": version, "input": inp}
+
+    status, resp = http(f"{REPLICATE_BASE}/predictions",
+                        method="POST", headers=_replicate_hdr,
+                        data=body, timeout=60)
+    if status >= 400:
+        raise RuntimeError(f"Replicate inpaint submit failed [{status}]: {resp}")
+    return resp.get("id") or resp.get("urls", {}).get("get", "").rstrip("/").split("/")[-1]
+
+
+def run_inpaint_compose(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
+    """
+    Multi-character composition via iterative inpainting.
+
+    Pass 1: generate the first character full-frame using their LoRA, prompted
+            to stand in their leftmost band of the shot.
+    Pass 2..N: for each subsequent character, mask their band and inpaint with
+               THAT character's LoRA. Single LoRA per call → identity preserved.
+
+    On success, final composed image is saved to keyframe_image_url and the
+    shot flips to still_review so the user can approve and animate.
+    """
+    chars = parse_chars(shot.get("characters_used"))
+    if len(chars) < 2:
+        raise ValueError("run_inpaint_compose called with < 2 characters")
+
+    aspect = replicate_aspect_ratio_for(img_ratio)
+    base_translated = trigger_translate_prompt(prompt_raw)
+
+    # Pass 1 — first character full-frame
+    primary = chars[0]
+    primary_info = lookup_lora(primary)
+    if not primary_info:
+        update_shot(db_id, status="needs_keyframe",
+                    review_notes=f"LoRA missing for {primary}")
+        return
+
+    pass1_prompt = (
+        f"{primary_info['trigger']}, {_position_phrase(0, len(chars))}, "
+        f"{base_translated}, illustration style"
+    )
+    print(f"  [Inpaint Compose] Pass 1: {primary} ({primary_info['lora']})")
+    print(f"     prompt={pass1_prompt[:120]}…")
+    try:
+        pred = submit_replicate_still(pass1_prompt, [primary_info], aspect)
+        result = poll_replicate(pred)
+        canvas_url = first_output(result)
+        if not canvas_url:
+            raise RuntimeError(f"Pass 1 returned no output: {result}")
+        print(f"  [Inpaint Compose] Pass 1 OK → {canvas_url[:80]}…")
+    except Exception as e:
+        update_shot(db_id, status="revision_needed",
+                    review_notes=f"Inpaint compose Pass 1 failed: {str(e)[:300]}")
+        print(f"  FAILED Pass 1: {e}")
+        return
+
+    # Read canvas dimensions to size the masks
+    try:
+        width, height = _read_png_dims(canvas_url)
+        print(f"  [Inpaint Compose] canvas {width}x{height}")
+    except Exception as e:
+        update_shot(db_id, status="revision_needed",
+                    review_notes=f"Pass 1 canvas not a readable PNG: {str(e)[:300]}")
+        print(f"  FAILED dim read: {e}")
+        return
+
+    # Pass 2..N — inpaint each subsequent character
+    for i, name in enumerate(chars[1:], start=1):
+        info = lookup_lora(name)
+        if not info:
+            update_shot(db_id, status="revision_needed",
+                        review_notes=f"LoRA missing for {name} mid-compose")
+            print(f"  FAILED — {name} LoRA missing")
+            return
+
+        x_start, x_end = _band_for_position(i, len(chars), width)
+        try:
+            mask_png = _make_band_mask_png(width, height, x_start, x_end)
+        except Exception as e:
+            update_shot(db_id, status="revision_needed",
+                        review_notes=f"Mask build failed for {name}: {str(e)[:200]}")
+            print(f"  FAILED mask build: {e}")
+            return
+        mask_uri = "data:image/png;base64," + base64.b64encode(mask_png).decode("ascii")
+
+        inpaint_prompt = (
+            f"{info['trigger']}, {_position_phrase(i, len(chars))}, "
+            f"{base_translated}, illustration style"
+        )
+        print(f"  [Inpaint Compose] Pass {i+1}: {name} ({info['lora']}) "
+              f"band=[{x_start},{x_end})")
+        print(f"     prompt={inpaint_prompt[:120]}…")
+        try:
+            pred = submit_replicate_inpaint(inpaint_prompt, info, canvas_url, mask_uri)
+            result = poll_replicate(pred)
+            new_url = first_output(result)
+            if not new_url:
+                raise RuntimeError(f"Pass {i+1} returned no output: {result}")
+            print(f"  [Inpaint Compose] Pass {i+1} OK → {new_url[:80]}…")
+            canvas_url = new_url
+        except Exception as e:
+            update_shot(db_id, status="revision_needed",
+                        review_notes=f"Inpaint compose Pass {i+1} ({name}) failed: {str(e)[:300]}")
+            print(f"  FAILED Pass {i+1}: {e}")
+            return
+
+    # Final canvas is the composed keyframe — flip to still_review for human approval
+    triggers = [lookup_lora(c)["trigger"] for c in chars]
+    update_shot(
+        db_id,
+        status             = "still_review",
+        keyframe_image_url = canvas_url,
+        review_notes       = f"Iterative inpaint compose: {len(chars)} chars ({','.join(triggers)})",
+    )
+    print(f"  DONE — composed {len(chars)}-character keyframe → {canvas_url[:80]}…")
 
 
 def run_compose_kit(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
