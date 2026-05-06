@@ -124,11 +124,14 @@ def lookup_scene(tag: str) -> str | None:
 # FLUX-schnell-derived LoRAs cap steps at 4. The runner falls back to the
 # model's published defaults when extra_input is empty/missing.
 CHARACTER_LORAS: dict[str, dict] = {
+    # Trained on Replicate (FLUX-dev-LoRA-trainer). Trigger word = <NAME>_RM.
+    "Maya":   {"lora": "pericepope/maya-roommates",     "version": None, "trigger": "MAYA_RM",   "extra_input": {}},
+    "Marcus": {"lora": "pericepope/marcus-roommates",   "version": None, "trigger": "MARCUS_RM", "extra_input": {}},
+    "Julian": {"lora": "pericepope/jullian-roommates",  "version": None, "trigger": "JULIAN_RM", "extra_input": {}},  # NB: model URL spells "jullian"
+    "Lily":   {"lora": "pericepope/lily-roommates-v1",  "version": None, "trigger": "LILY_RM",   "extra_input": {}},
+    # Not yet trained — shots using these route to needs_keyframe (manual upload).
     "Peter":  {"lora": None, "version": None, "trigger": "PETER_RM", "extra_input": {}},
-    "Marcus": {"lora": None, "version": None, "trigger": "MARCUS_RM", "extra_input": {}},
-    "Julian": {"lora": None, "version": None, "trigger": "JULIAN_RM", "extra_input": {}},
-    "Noah":   {"lora": None, "version": None, "trigger": "NOAH_RM", "extra_input": {}},
-    "Maya":   {"lora": None, "version": None, "trigger": "MAYA_RM", "extra_input": {}},
+    "Noah":   {"lora": None, "version": None, "trigger": "NOAH_RM",  "extra_input": {}},
 }
 
 
@@ -161,8 +164,11 @@ def all_loras_ready(names: list[str]) -> tuple[bool, list[str]]:
 #  visual language without burning a character LoRA slot.
 # ─────────────────────────────────────────────────────────────────────────────
 INSERT_MODEL: dict = {
-    "lora": "black-forest-labs/flux-schnell",
-    "version": None,
-    "trigger": "",                        # no trigger word for insert/style
-    "extra_input": {"num_inference_steps": 4},   # flux-schnell cap
+    "lora":     "pericepope/house-roommates",   # the trained settings LoRA — keeps
+                                                # backdrops in the Roommates style
+                                                # and inside the same house geometry
+    "version":  None,
+    "trigger":  "HOUSE_RM",                     # if your training used a different
+                                                # trigger word, change this string
+    "extra_input": {},                          # flux-dev defaults are fine
 }
