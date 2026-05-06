@@ -51,7 +51,7 @@ from pathlib import Path
 # Local registry — single source of truth for character/scene images and LoRAs.
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from assets import (  # noqa: E402
-    CHARACTERS, SCENES, CHARACTER_LORAS, INSERT_MODEL,
+    CHARACTERS, SCENES, CHARACTER_LORAS, INSERT_MODEL, SETTING_TRIGGERS,
     lookup_character, lookup_scene, lookup_lora, all_loras_ready,
 )
 
@@ -734,14 +734,21 @@ _replicate_hdr = {
 
 
 # Translate @<name> tokens in the existing runway_prompt to the trained LoRA's
-# trigger word (e.g. @maya → MAYA_RM). Names with no LoRA stay as @ tokens.
+# trigger word. Looks up character LoRAs first (e.g. @maya → rmt_maya_woman)
+# then setting triggers (e.g. @house → RMT_HOUSE). Tags with no match stay
+# as @ tokens (so the model treats them as plain text or ignores them).
 def trigger_translate_prompt(prompt: str) -> str:
     if not prompt:
         return prompt
     def repl(m: re.Match) -> str:
         raw = m.group(1)
         info = lookup_lora(raw)
-        return info["trigger"] if info else m.group(0)
+        if info:
+            return info["trigger"]
+        setting = SETTING_TRIGGERS.get(raw.lower())
+        if setting:
+            return setting
+        return m.group(0)
     return re.sub(r"@([A-Za-z][A-Za-z0-9_]*)", repl, prompt)
 
 
@@ -842,7 +849,7 @@ def run_compose_kit(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> 
     aspect = replicate_aspect_ratio_for(img_ratio)
 
     # 1. Backdrop — describe the setting only, NO characters.
-    backdrop_prompt = (
+    backdrop_prompt = _ensure_insert_trigger(
         f"{prompt_raw}, no characters, empty composition, "
         f"clean stage / setting, illustration style"
     )
@@ -908,20 +915,35 @@ def run_compose_kit(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> 
     print(f"  [Compose Kit] DONE — {successful}/{len(chars)} characters; status=needs_keyframe")
 
 
+def _ensure_insert_trigger(prompt: str) -> str:
+    """
+    INSERT_MODEL is a trained LoRA (the Roommates house). The LoRA only fires
+    when its trigger word is present in the prompt — without it, the model
+    behaves like vanilla flux-dev. Translate any @house/etc tags first; if the
+    trigger still isn't present, prepend it so the LoRA actually activates.
+    """
+    p = trigger_translate_prompt(prompt or "")
+    trig = (INSERT_MODEL.get("trigger") or "").strip()
+    if trig and trig not in p:
+        p = f"{trig}, {p}"
+    return p
+
+
 def run_replicate_insert(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
     """
     Stage 1 for character-free shot types (insert / establishing / match_cut /
-    environment). Uses INSERT_MODEL (a generic Replicate model) — no LoRAs.
-    The prompt should describe the object/setting; no @-tags expected.
+    environment). Uses INSERT_MODEL (the house LoRA). Trigger word is injected
+    automatically if the prompt doesn't already include it.
     """
     aspect = replicate_aspect_ratio_for(img_ratio)
+    prompt = _ensure_insert_trigger(prompt_raw)
     print(f"  [Stage 1 / insert] {INSERT_MODEL['lora']} aspect={aspect}")
-    print(f"           prompt={prompt_raw[:120]}…")
+    print(f"           prompt={prompt[:120]}…")
 
     last_err: Exception | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            pred_id = submit_replicate_still(prompt_raw, [INSERT_MODEL], aspect)
+            pred_id = submit_replicate_still(prompt, [INSERT_MODEL], aspect)
             print(f"  [Stage 1 / insert] prediction {pred_id}")
             result = poll_replicate(pred_id)
             output = result.get("output")

@@ -124,14 +124,22 @@ def lookup_scene(tag: str) -> str | None:
 # FLUX-schnell-derived LoRAs cap steps at 4. The runner falls back to the
 # model's published defaults when extra_input is empty/missing.
 CHARACTER_LORAS: dict[str, dict] = {
-    # Trained on Replicate (FLUX-dev-LoRA-trainer). Trigger word = <NAME>_RM.
-    "Maya":   {"lora": "pericepope/maya-roommates",     "version": None, "trigger": "MAYA_RM",   "extra_input": {}},
-    "Marcus": {"lora": "pericepope/marcus-roommates",   "version": None, "trigger": "MARCUS_RM", "extra_input": {}},
-    "Julian": {"lora": "pericepope/jullian-roommates",  "version": None, "trigger": "JULIAN_RM", "extra_input": {}},  # NB: model URL spells "jullian"
-    "Lily":   {"lora": "pericepope/lily-roommates-v1",  "version": None, "trigger": "LILY_RM",   "extra_input": {}},
+    # Trained on Replicate (FLUX-dev-LoRA-trainer). Trigger words follow the
+    # rmt_<name>_<gender> convention used at training time.
+    "Maya":   {"lora": "pericepope/maya-roommates",     "version": None, "trigger": "rmt_maya_woman",   "extra_input": {}},
+    "Marcus": {"lora": "pericepope/marcus-roommates",   "version": None, "trigger": "rmt_marcus_man",   "extra_input": {}},
+    "Julian": {"lora": "pericepope/jullian-roommates",  "version": None, "trigger": "rmt_julian_man",   "extra_input": {}},  # NB: model URL spells "jullian"
+    "Lily":   {"lora": "pericepope/lily-roommates-v1",  "version": None, "trigger": "rmt_lilly_woman",  "extra_input": {}},  # NB: trigger spells "lilly"
     # Not yet trained — shots using these route to needs_keyframe (manual upload).
-    "Peter":  {"lora": None, "version": None, "trigger": "PETER_RM", "extra_input": {}},
-    "Noah":   {"lora": None, "version": None, "trigger": "NOAH_RM",  "extra_input": {}},
+    "Peter":  {"lora": None, "version": None, "trigger": "rmt_peter_man", "extra_input": {}},
+    "Noah":   {"lora": None, "version": None, "trigger": "rmt_noah_man",  "extra_input": {}},
+}
+
+# Setting triggers — translates @<slug> in prompts (e.g. @house) into the
+# trained LoRA trigger word. Used by the runner during prompt processing for
+# both Stage 1 still gen and the compose-kit backdrop.
+SETTING_TRIGGERS: dict[str, str] = {
+    "house": "RMT_HOUSE",
 }
 
 
@@ -168,7 +176,6 @@ INSERT_MODEL: dict = {
                                                 # backdrops in the Roommates style
                                                 # and inside the same house geometry
     "version":  None,
-    "trigger":  "HOUSE_RM",                     # if your training used a different
-                                                # trigger word, change this string
+    "trigger":  "RMT_HOUSE",                    # actual trigger from training
     "extra_input": {},                          # flux-dev defaults are fine
 }
