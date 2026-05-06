@@ -837,6 +837,11 @@ def submit_replicate_still(prompt: str, lora_infos: list[dict], aspect_ratio: st
         "aspect_ratio":  aspect_ratio,
         "output_format": "png",
         "num_outputs":   1,
+        # Push the main LoRA at full strength so the trained character/setting
+        # signal dominates the prompt's environmental keywords. FLUX-LoRA-trainer
+        # outputs default to 1.0 but we set it explicitly to be deterministic
+        # across model retrains.
+        "lora_scale":    1.0,
     }
     # Extra LoRAs: FLUX-LoRA-trainer outputs accept extra_lora + extra_lora_scale.
     if extra:
@@ -987,7 +992,12 @@ def submit_replicate_inpaint(prompt: str, lora_info: dict, image_url: str,
         "mask":            mask_data_uri,
         "output_format":   "png",
         "num_outputs":     1,
-        "prompt_strength": 0.85,
+        # 1.0 = fully repaint the masked area. The mask itself preserves the
+        # input image OUTSIDE the masked region, so we don't lose the previous
+        # character. Pushing the LoRA at full strength inside the mask gives
+        # the cleanest identity for the new character.
+        "prompt_strength": 1.0,
+        "lora_scale":      1.0,
     }
     inp.update(lora_info.get("extra_input") or {})
     version = lora_info.get("version") or _replicate_latest_version(lora_info["lora"])
@@ -999,6 +1009,40 @@ def submit_replicate_inpaint(prompt: str, lora_info: dict, image_url: str,
     if status >= 400:
         raise RuntimeError(f"Replicate inpaint submit failed [{status}]: {resp}")
     return resp.get("id") or resp.get("urls", {}).get("get", "").rstrip("/").split("/")[-1]
+
+
+def _strip_other_triggers(prompt: str, keep_trigger: str) -> str:
+    """
+    Remove every character LoRA's trigger word from `prompt` except the one
+    we want to keep. Used so each compose pass focuses the LoRA on its own
+    character without confusing the model with other characters' triggers.
+    """
+    if not prompt:
+        return prompt
+    out = prompt
+    for info in CHARACTER_LORAS.values():
+        trig = (info or {}).get("trigger") or ""
+        if not trig or trig == keep_trigger:
+            continue
+        # Match the trigger word as a whole token, optionally followed by a
+        # comma and whitespace. Case-insensitive.
+        out = re.sub(rf"\b{re.escape(trig)}\b\s*,?\s*", "", out, flags=re.IGNORECASE)
+    # Squash double spaces / commas left behind
+    out = re.sub(r"\s+,", ",", out)
+    out = re.sub(r",\s*,", ",", out)
+    out = re.sub(r"\s{2,}", " ", out).strip().strip(",").strip()
+    return out
+
+
+def _build_pass_prompt(base_translated: str, trigger: str, position: str) -> str:
+    """Anchor the trigger at the front, drop other characters' triggers, dedupe
+    if the trigger is already present anywhere in the translated prompt."""
+    cleaned = _strip_other_triggers(base_translated, trigger)
+    # If the trigger already appears anywhere, just append the position phrase
+    # — no need to repeat the trigger word at the front.
+    if trigger.lower() in cleaned.lower():
+        return f"{cleaned}, {position}"
+    return f"{trigger}, {position}, {cleaned}"
 
 
 def run_inpaint_compose(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
@@ -1028,9 +1072,8 @@ def run_inpaint_compose(shot: dict, prompt_raw: str, img_ratio: str, db_id: str)
                     review_notes=f"LoRA missing for {primary}")
         return
 
-    pass1_prompt = (
-        f"{primary_info['trigger']}, {_position_phrase(0, len(chars))}, "
-        f"{base_translated}, illustration style"
+    pass1_prompt = _build_pass_prompt(
+        base_translated, primary_info["trigger"], _position_phrase(0, len(chars))
     )
     print(f"  [Inpaint Compose] Pass 1: {primary} ({primary_info['lora']})")
     print(f"     prompt={pass1_prompt[:120]}…")
@@ -1076,9 +1119,8 @@ def run_inpaint_compose(shot: dict, prompt_raw: str, img_ratio: str, db_id: str)
             return
         mask_uri = "data:image/png;base64," + base64.b64encode(mask_png).decode("ascii")
 
-        inpaint_prompt = (
-            f"{info['trigger']}, {_position_phrase(i, len(chars))}, "
-            f"{base_translated}, illustration style"
+        inpaint_prompt = _build_pass_prompt(
+            base_translated, info["trigger"], _position_phrase(i, len(chars))
         )
         print(f"  [Inpaint Compose] Pass {i+1}: {name} ({info['lora']}) "
               f"band=[{x_start},{x_end})")
