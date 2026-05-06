@@ -761,10 +761,40 @@ def replicate_aspect_ratio_for(img_ratio: str) -> str:
     return "9:16"
 
 
+# Cache of latest-version hashes so we don't refetch every submit.
+_REPLICATE_VERSION_CACHE: dict[str, str] = {}
+
+
+def _replicate_latest_version(model_id: str) -> str:
+    """
+    Look up the latest version hash for a Replicate model. Required for
+    private models — their predictions endpoint requires the versioned
+    /v1/predictions path with `version` in the body. Public models can use
+    /v1/models/{name}/predictions, but versioned form works for both, so
+    we always use it.
+    """
+    if model_id in _REPLICATE_VERSION_CACHE:
+        return _REPLICATE_VERSION_CACHE[model_id]
+    status, resp = http(
+        f"{REPLICATE_BASE}/models/{model_id}",
+        headers=_replicate_hdr, timeout=15,
+    )
+    if status >= 400:
+        raise RuntimeError(f"Could not fetch model {model_id} [{status}]: {resp}")
+    version_id = ((resp or {}).get("latest_version") or {}).get("id")
+    if not version_id:
+        raise RuntimeError(f"Model {model_id} has no latest_version (not deployed?): {resp}")
+    _REPLICATE_VERSION_CACHE[model_id] = version_id
+    return version_id
+
+
 def submit_replicate_still(prompt: str, lora_infos: list[dict], aspect_ratio: str) -> str:
     """
     Submit a still-image generation to Replicate using one or more character
     LoRAs. Returns the prediction id; caller polls.
+
+    Always uses the versioned /v1/predictions endpoint so private models work.
+    Looks up `latest_version` automatically if the LoRA entry doesn't pin one.
 
     Each LoRA entry may carry an optional `extra_input` dict whose keys are
     merged into the input payload. Use this to override num_inference_steps,
@@ -795,13 +825,9 @@ def submit_replicate_still(prompt: str, lora_infos: list[dict], aspect_ratio: st
     # Merge per-LoRA overrides last so they win against defaults above.
     inp.update(primary.get("extra_input") or {})
 
-    body: dict = {"input": inp}
-    if primary.get("version"):
-        body["version"] = primary["version"]
-        endpoint = f"{REPLICATE_BASE}/predictions"
-    else:
-        # Run the latest version of the named model
-        endpoint = f"{REPLICATE_BASE}/models/{primary['lora']}/predictions"
+    version = primary.get("version") or _replicate_latest_version(primary["lora"])
+    body = {"version": version, "input": inp}
+    endpoint = f"{REPLICATE_BASE}/predictions"
 
     status, resp = http(endpoint, method="POST", headers=_replicate_hdr, data=body, timeout=60)
     if status >= 400:
