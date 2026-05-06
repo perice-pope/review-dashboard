@@ -546,9 +546,14 @@ SHOT_TYPE_DEFAULTS: dict[str, dict] = {
 # Shot types that DON'T need character LoRAs — pure prompt → still.
 NO_CHARACTER_SHOT_TYPES = {"insert", "establishing", "match_cut", "environment"}
 
-# Replicate FLUX-LoRA stacking quality drops past 2 LoRAs. Any shot with more
-# characters than this routes to needs_keyframe (human composite).
-MAX_LORA_STACK = 2
+# Stacking via `extra_lora` requires the secondary LoRA to be a PUBLIC Replicate
+# model — Replicate's worker fetches /_weights via pget, which 404s for private
+# models. All the trained Roommates LoRAs are private, so stacking can't work.
+# Cap at 1 LoRA per call. Multi-character shots route through compose_kit
+# (one solo still per character + backdrop, user composites in Photopea).
+# Phase 2: iterative inpainting via each LoRA's image+mask schema can replace
+# the manual composite step entirely — but that's a bigger build.
+MAX_LORA_STACK = 1
 
 # Translates motion_intensity into a short suffix appended to the animation
 # prompt. Empty string for medium (default; no extra hint).
