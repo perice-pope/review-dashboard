@@ -340,6 +340,21 @@ function apiCall(body) {
 var lastFetchTime = null;
 var dataDirty = false;   // set when an action is in flight; suppresses background diff
 
+// Optimistic local patch — write changes into allData and re-render. The
+// surgical reconciler then swaps only the affected card, no full reload.
+// Use this in action handlers instead of loadData(); the next 12s poll
+// will reconcile against authoritative DB state.
+function patchShotLocal(shotId, updates) {
+  var shots = (allData && allData.shots) || [];
+  for (var i = 0; i < shots.length; i++) {
+    if (shots[i].id === shotId) {
+      Object.assign(shots[i], updates);
+      break;
+    }
+  }
+  renderAll();
+}
+
 function loadData(opts) {
   opts = opts || {};
   var background = !!opts.background;
@@ -445,27 +460,37 @@ function renderAll() {
   var dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   document.getElementById('subtitle').textContent = 'Review Dashboard \u2014 ' + dateStr;
 
-  // Song filter
+  // Song filter — only rebuild options when the song list itself changed
+  // (otherwise we'd reset the dropdown's open state and selection cursor).
   var sel = document.getElementById('song-filter');
-  sel.innerHTML = '<option value="all">All Songs</option>';
-  for (var i = 0; i < songs.length; i++) {
-    sel.innerHTML += '<option value="' + songs[i].id + '">' + esc(songs[i].song_title) + '</option>';
+  var songsKey = songs.map(function(s){ return s.id + '|' + s.song_title; }).join(';');
+  if (sel.dataset.songsKey !== songsKey) {
+    var opts = ['<option value="all">All Songs</option>'];
+    for (var i = 0; i < songs.length; i++) {
+      opts.push('<option value="' + songs[i].id + '">' + esc(songs[i].song_title) + '</option>');
+    }
+    sel.innerHTML = opts.join('');
+    sel.dataset.songsKey = songsKey;
   }
-  sel.value = currentSongId;
+  if (sel.value !== currentSongId) sel.value = currentSongId;
   sel.onchange = function() { currentSongId = sel.value; applyFilters(); };
 
-  // Summary
-  document.getElementById('summary-bar').innerHTML =
+  // Summary — set innerHTML only when string differs. This kills the
+  // every-12s flash on the count dots when nothing actually changed.
+  var summaryHtml =
     '<div class="summary-item"><span class="summary-dot dot-approved"></span> ' + counts.approved + ' Approved</div>' +
     '<div class="summary-item"><span class="summary-dot dot-pending"></span> ' + counts.pending + ' Pending</div>' +
     '<div class="summary-item"><span class="summary-dot dot-needs-keyframe"></span> ' + counts.needs_keyframe + ' Needs Keyframe</div>' +
     '<div class="summary-item"><span class="summary-dot dot-revision"></span> ' + counts.revision_needed + ' Revision</div>' +
     '<div class="summary-item"><span class="summary-dot dot-in-post"></span> ' + counts.in_post + ' In Post</div>' +
     '<div class="summary-item"><span class="summary-dot dot-rejected"></span> ' + counts.rejected + ' Rejected</div>';
+  var sumEl = document.getElementById('summary-bar');
+  if (sumEl.innerHTML !== summaryHtml) sumEl.innerHTML = summaryHtml;
 
-  // Filter bar
+  // Filter bar — same dedup. Most polls leave counts identical, so the bar
+  // should not blink at all.
   var fb = document.getElementById('filter-bar');
-  fb.innerHTML =
+  var filterHtml =
     '<button class="filter-btn' + (currentFilter === 'all' ? ' active' : '') + '" onclick="setFilter(\'all\',this)">All (' + counts.total + ')</button>' +
     '<button class="filter-btn' + (currentFilter === 'pending' ? ' active' : '') + '" onclick="setFilter(\'pending\',this)">Pending</button>' +
     '<button class="filter-btn' + (currentFilter === 'still_review' ? ' active' : '') + '" onclick="setFilter(\'still_review\',this)">Still Review (' + counts.still_review + ')</button>' +
@@ -474,6 +499,7 @@ function renderAll() {
     '<button class="filter-btn' + (currentFilter === 'approved' ? ' active' : '') + '" onclick="setFilter(\'approved\',this)">Approved</button>' +
     '<button class="filter-btn' + (currentFilter === 'in_post' ? ' active' : '') + '" onclick="setFilter(\'in_post\',this)">In Post</button>' +
     '<button class="filter-btn' + (currentFilter === 'rejected' ? ' active' : '') + '" onclick="setFilter(\'rejected\',this)">Rejected</button>';
+  if (fb.innerHTML !== filterHtml) fb.innerHTML = filterHtml;
 
   // Show controls
   document.getElementById('controls').style.display = 'flex';
@@ -913,14 +939,18 @@ function applyRevision(shotId, runId, feedback) {
   var sceneEl  = document.getElementById('modal-scene');
   var btn = document.getElementById('modal-apply-btn');
   if (btn) btn.disabled = true;
+  // Snapshot values upfront — closeModal() detaches the inputs.
+  var promptVal = promptEl ? promptEl.value : '';
+  var charsVal  = charsEl  ? charsEl.value  : '';
+  var sceneVal  = sceneEl  ? sceneEl.value  : '';
 
   apiCall({
     action: 'apply_revision',
     shot_id: shotId,
     run_id: runId,
-    runway_prompt: promptEl.value,
-    characters_used: charsEl.value,
-    scene_ref: sceneEl ? sceneEl.value : '',
+    runway_prompt: promptVal,
+    characters_used: charsVal,
+    scene_ref: sceneVal,
     feedback: feedback
   }).then(function(resp) {
     closeModal();
@@ -930,7 +960,12 @@ function applyRevision(shotId, runId, feedback) {
       var why = resp && resp.render_trigger_reason ? ' (' + resp.render_trigger_reason + ')' : '';
       toast('Revision applied — cron will pick up within 5 min' + why);
     }
-    loadData();
+    patchShotLocal(shotId, {
+      status: 'revision_needed',
+      runway_prompt: promptVal,
+      characters_used: charsVal,
+      scene_ref: sceneVal || null,
+    });
   }).catch(function(err) {
     if (btn) btn.disabled = false;
     toast('Apply failed: ' + err.message, 'error');
@@ -940,14 +975,14 @@ function applyRevision(shotId, runId, feedback) {
 function changeStatus(id, status) {
   apiCall({ action: 'change_status', shot_id: id, status: status }).then(function() {
     toast('Status changed to ' + status);
-    loadData();
+    patchShotLocal(id, { status: status });
   }).catch(function(err) { toast(err.message, 'error'); });
 }
 
 function approveDirector(id) {
   apiCall({ action: 'approve_director', shot_id: id }).then(function() {
     toast('Director signoff approved');
-    loadData();
+    patchShotLocal(id, { director_signoff_status: 'approved' });
   }).catch(function(err) { toast(err.message, 'error'); });
 }
 
@@ -1026,13 +1061,16 @@ function renderStillCard(shot) {
 function regenerateStill(shotId, btn) {
   var promptEl = document.getElementById('still-prompt-' + shotId);
   if (btn) btn.disabled = true;
+  var promptVal = promptEl ? promptEl.value : undefined;
   apiCall({
     action: 'regenerate_still',
     shot_id: shotId,
-    runway_prompt: promptEl ? promptEl.value : undefined,
+    runway_prompt: promptVal,
   }).then(function(resp) {
     toast(resp && resp.render_triggered ? 'Regenerating still — ~60s' : 'Queued — cron will pick up');
-    loadData();
+    var patch = { status: 'queued', keyframe_image_url: null };
+    if (typeof promptVal === 'string' && promptVal) patch.runway_prompt = promptVal;
+    patchShotLocal(shotId, patch);
   }).catch(function(err) {
     if (btn) btn.disabled = false;
     toast('Regenerate failed: ' + err.message, 'error');
@@ -1043,14 +1081,19 @@ function animateStill(shotId, btn) {
   var promptEl = document.getElementById('still-prompt-' + shotId);
   var modelEl  = document.getElementById('still-model-' + shotId);
   if (btn) btn.disabled = true;
+  var promptVal = promptEl ? promptEl.value : undefined;
+  var modelVal  = modelEl  ? modelEl.value  : undefined;
   apiCall({
     action: 'animate_still',
     shot_id: shotId,
-    runway_prompt: promptEl ? promptEl.value : undefined,
-    animation_model: modelEl ? modelEl.value : undefined,
+    runway_prompt: promptVal,
+    animation_model: modelVal,
   }).then(function(resp) {
     toast(resp && resp.render_triggered ? 'Animating — ~3 min' : 'Queued — cron will pick up');
-    loadData();
+    var patch = { status: 'revision_needed' };
+    if (typeof promptVal === 'string' && promptVal) patch.runway_prompt = promptVal;
+    if (typeof modelVal === 'string' && modelVal) patch.animation_model = modelVal;
+    patchShotLocal(shotId, patch);
   }).catch(function(err) {
     if (btn) btn.disabled = false;
     toast('Animate failed: ' + err.message, 'error');
@@ -1203,7 +1246,7 @@ function applyKeyframe(shotId, btn) {
     .then(function(resp){
       if (resp && resp.render_triggered) toast('Keyframe locked — render started, ~3 min');
       else toast('Keyframe locked — cron will render within 5 min');
-      loadData();
+      patchShotLocal(shotId, { status: 'revision_needed', keyframe_image_url: val });
     })
     .catch(function(err){
       if (btn) btn.disabled = false;
@@ -1256,7 +1299,7 @@ function uploadKeyframeFile(shotId, file) {
     }).then(function(resp) {
       if (resp && resp.render_triggered) toast('Uploaded → keyframe locked → render started');
       else toast('Uploaded → keyframe locked');
-      loadData();
+      patchShotLocal(shotId, { status: 'revision_needed', keyframe_image_url: (resp && resp.file_id) || base64 });
     }).catch(function(err) {
       if (textEl) textEl.innerHTML = '<b>Drop a PNG here</b> (or click to choose)';
       toast('Upload failed: ' + err.message, 'error');
@@ -1275,7 +1318,7 @@ function recomposeFromModal(shotId) {
     .then(function(){
       closeModal();
       toast('Keyframe cleared — see the Compose Keyframe card');
-      loadData();
+      patchShotLocal(shotId, { status: 'needs_keyframe', keyframe_image_url: null });
     })
     .catch(function(err){ toast('Recompose failed: ' + err.message, 'error'); });
 }
@@ -1285,7 +1328,7 @@ function recomposeKeyframe(shotId) {
   apiCall({ action: 'clear_keyframe', shot_id: shotId })
     .then(function(){
       toast('Keyframe cleared — compose a new one');
-      loadData();
+      patchShotLocal(shotId, { status: 'needs_keyframe', keyframe_image_url: null });
     })
     .catch(function(err){ toast(err.message, 'error'); });
 }
