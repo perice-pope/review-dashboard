@@ -268,7 +268,8 @@
     <select class="song-select" id="song-filter"></select>
     <div class="summary-bar" id="summary-bar"></div>
     <button class="btn-download" onclick="downloadApproved()">Download Approved Manifest</button>
-    <button class="btn-refresh" onclick="loadData()">Refresh</button>
+    <button class="btn-refresh" onclick="loadData()">Refresh now</button>
+    <span id="live-indicator" style="font-size:11px;color:#5b8a7a;margin-left:4px;font-weight:600">● live</span>
   </div>
 </header>
 
@@ -330,21 +331,81 @@ function apiCall(body) {
 }
 
 // ── Load data ──
-function loadData() {
-  document.getElementById('grid').innerHTML = '<div class="loading"><div class="spinner"></div>Loading shots...</div>';
-  fetch(API_URL)
+// Two modes: foreground (shows the spinner, used for first paint + manual
+// refresh) and background (silent, used by the auto-refresh poll so it doesn't
+// flash a spinner every 12 seconds while you're reviewing).
+var lastFetchTime = null;
+var dataDirty = false;   // set when an action is in flight; suppresses background diff
+
+function loadData(opts) {
+  opts = opts || {};
+  var background = !!opts.background;
+  var grid = document.getElementById('grid');
+  if (!background) {
+    grid.innerHTML = '<div class="loading"><div class="spinner"></div>Loading shots...</div>';
+  }
+  var prevScrollY = window.scrollY;
+
+  return fetch(API_URL)
     .then(function(res) {
       if (!res.ok) throw new Error('API returned ' + res.status);
       return res.json();
     })
     .then(function(data) {
       allData = data;
+      lastFetchTime = Date.now();
       renderAll();
+      if (background) {
+        // Restore scroll position so the page doesn't jump on the user mid-review
+        window.scrollTo({ top: prevScrollY, behavior: 'instant' });
+      }
+      updateLiveIndicator();
     })
     .catch(function(err) {
-      document.getElementById('grid').innerHTML = '<div class="error-state">Could not load data: ' + esc(err.message) + '</div>';
+      if (!background) {
+        grid.innerHTML = '<div class="error-state">Could not load data: ' + esc(err.message) + '</div>';
+      } else {
+        // Silent fail in background — show a stale indicator instead
+        var el = document.getElementById('live-indicator');
+        if (el) { el.textContent = 'Update failed — will retry'; el.style.color = '#e8a060'; }
+      }
     });
 }
+
+// ── Auto-refresh polling ──
+// Polls every 12s while the tab is visible. Pauses when you tab away (Page
+// Visibility API) so we don't burn API calls in the background. Snaps back to
+// a fresh fetch the moment the tab regains focus.
+var POLL_INTERVAL_MS = 12000;
+var pollTimer = null;
+
+function startAutoRefresh() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(function() {
+    if (document.visibilityState === 'visible') {
+      loadData({ background: true });
+    }
+  }, POLL_INTERVAL_MS);
+}
+
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'visible') {
+    loadData({ background: true });   // immediate refresh on tab return
+  }
+});
+
+function updateLiveIndicator() {
+  var el = document.getElementById('live-indicator');
+  if (!el || !lastFetchTime) return;
+  var secs = Math.round((Date.now() - lastFetchTime) / 1000);
+  var label = secs < 5  ? 'just now'
+            : secs < 60 ? secs + 's ago'
+            : Math.floor(secs / 60) + 'm ago';
+  el.textContent = '● live · updated ' + label;
+  el.style.color = secs < 30 ? '#5b8a7a' : '#a08066';
+}
+// Tick the indicator every second so it stays current even between polls
+setInterval(updateLiveIndicator, 1000);
 
 // ── Render ──
 function renderAll() {
@@ -1300,6 +1361,7 @@ function downloadApproved() {
 
 // ── Init ──
 loadData();
+startAutoRefresh();
 </script>
 </body>
 </html>
