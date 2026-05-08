@@ -668,7 +668,45 @@ function renderAll() {
     html += '</div></div>';
   }
 
-  document.getElementById('grid').innerHTML = html;
+  // ── Keyed reconciliation (React-style, vanilla) ──
+  // Instead of nuking grid.innerHTML, parse the new HTML, walk top-level
+  // children, and for each one find the matching existing node by stable key.
+  // If the new outerHTML is identical, MOVE the existing node into the new
+  // position (no DOM churn — keeps video state, scroll, focus, typed input).
+  // If it differs, swap in the new node. Net: only changed cards re-render.
+  var grid = document.getElementById('grid');
+  var temp = document.createElement('div');
+  temp.innerHTML = html;
+  var newChildren = Array.from(temp.children);
+
+  function keyFor(el) {
+    if (!el || !el.classList) return null;
+    if (el.classList.contains('shot-card'))   return 'shot:'  + (el.getAttribute('data-shot-id')   || '');
+    if (el.classList.contains('song-header')) return 'song:'  + (el.getAttribute('data-song-id')   || '');
+    if (el.classList.contains('scene-header')) return 'scene:' + (el.getAttribute('data-song-id') || '') + ':' + (el.getAttribute('data-scene-key') || '');
+    return null;
+  }
+
+  // Index existing children so we can look them up by key
+  var existingByKey = {};
+  Array.from(grid.children).forEach(function(el) {
+    var k = keyFor(el);
+    if (k) existingByKey[k] = el;
+  });
+
+  // Build the new order by reusing unchanged existing nodes verbatim
+  var fragment = document.createDocumentFragment();
+  newChildren.forEach(function(newEl) {
+    var k = keyFor(newEl);
+    if (k && existingByKey[k] && existingByKey[k].outerHTML === newEl.outerHTML) {
+      // No content change — move the existing live node into the new position.
+      // Preserves video playback, focus, typed text, scroll state.
+      fragment.appendChild(existingByKey[k]);
+    } else {
+      fragment.appendChild(newEl);
+    }
+  });
+  grid.replaceChildren(fragment);
   applyFilters();
 }
 
