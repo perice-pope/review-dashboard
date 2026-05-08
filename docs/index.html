@@ -474,7 +474,7 @@ function renderAll() {
     if (songId !== lastSongId) {
       var sStats = songStats[songId] || { total: 0, approved: 0, target: 0, sceneCount: 0 };
       var songTitle = songMap[songId] || 'Unknown Song';
-      html += '<div class="song-header">';
+      html += '<div class="song-header" data-song-id="' + (songId || '') + '">';
       html += '<span class="song-header-pill">Song</span>';
       html += '<span class="song-header-title">' + esc(songTitle) + '</span>';
       html += '<span class="song-header-meta">';
@@ -494,7 +494,7 @@ function renderAll() {
       var stats = sceneStats[sceneKey];
       var sNum = sceneNumByKey[sceneKey];
       var label = shot.scene_id ? ('Scene ' + sNum) : 'Unscheduled';
-      html += '<div class="scene-header">';
+      html += '<div class="scene-header" data-song-id="' + (songId || '') + '" data-scene-key="' + esc(sceneKey) + '">';
       html += '<span class="scene-label">' + esc(label) + '</span>';
       html += '<span class="scene-meta">' + stats.total + ' shot' + (stats.total === 1 ? '' : 's');
       html += ' · ' + Math.round(stats.target) + 's target';
@@ -543,7 +543,7 @@ function renderAll() {
       }
     }
 
-    html += '<div class="shot-card' + borderClass + '" data-status="' + shot.status + '" data-song-id="' + (shot.song_id || '') + '" data-shot-id="' + shot.id + '">';
+    html += '<div class="shot-card' + borderClass + '" data-status="' + shot.status + '" data-song-id="' + (shot.song_id || '') + '" data-scene-key="' + esc(sceneKey) + '" data-shot-id="' + shot.id + '">';
     html += '<div class="shot-header"><div class="shot-meta">';
     if (shot.shot_order != null) {
       html += '<span class="shot-order-tag">#' + shot.shot_order + '</span>';
@@ -621,16 +621,50 @@ function applyFilters() {
   var pendingStatuses = ['queued', 'generating', 'generated', 'review_pending'];
   var inPostStatuses = ['in_post', 'in_assembly'];
   var cards = document.querySelectorAll('.shot-card');
+  var visibleSongs = {};
+  var visibleScenes = {};
+
+  // 1. Toggle each shot card; remember which songs/scenes have at least one
+  //    visible card so we can hide their headers if all cards are filtered out.
   for (var i = 0; i < cards.length; i++) {
     var card = cards[i];
     var status = card.getAttribute('data-status');
     var songId = card.getAttribute('data-song-id');
+    var sceneKey = card.getAttribute('data-scene-key');
     var matchesStatus = currentFilter === 'all'
       || (currentFilter === 'pending' && pendingStatuses.indexOf(status) !== -1)
       || (currentFilter === 'in_post' && inPostStatuses.indexOf(status) !== -1)
       || status === currentFilter;
     var matchesSong = currentSongId === 'all' || songId === currentSongId;
-    card.style.display = (matchesStatus && matchesSong) ? '' : 'none';
+    var visible = matchesStatus && matchesSong;
+    card.style.display = visible ? '' : 'none';
+    if (visible) {
+      if (songId)   visibleSongs[songId] = true;
+      if (sceneKey) visibleScenes[sceneKey] = true;
+    }
+  }
+
+  // 2. Hide song banners whose songs have no visible cards. Filtered-out songs
+  //    fully collapse — including their banner — so the visible song lifts to
+  //    the top of the scrollport.
+  var songHeaders = document.querySelectorAll('.song-header');
+  for (var i = 0; i < songHeaders.length; i++) {
+    var sid = songHeaders[i].getAttribute('data-song-id');
+    songHeaders[i].style.display = visibleSongs[sid] ? '' : 'none';
+  }
+
+  // 3. Hide scene headers similarly — applies for status filters that may hide
+  //    every shot in a scene even though the song is visible.
+  var sceneHeaders = document.querySelectorAll('.scene-header');
+  for (var i = 0; i < sceneHeaders.length; i++) {
+    var sk = sceneHeaders[i].getAttribute('data-scene-key');
+    sceneHeaders[i].style.display = visibleScenes[sk] ? '' : 'none';
+  }
+
+  // 4. Snap the viewport to the top so the user lands at the visible block.
+  //    Skipping when the filter is 'all' to avoid jumping during plain reloads.
+  if (currentFilter !== 'all' || currentSongId !== 'all') {
+    window.scrollTo({ top: 0, behavior: 'instant' });
   }
 }
 
