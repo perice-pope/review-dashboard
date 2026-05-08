@@ -176,6 +176,9 @@
   /* Video cards */
   .videos-row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
   .video-card { background: #0f1419; border-radius: 8px; padding: 10px; border: 2px solid #2b3d52; width: 200px; transition: border-color 0.2s; position: relative; }
+  .video-card.run-approved { border-color: #2d8a4e; box-shadow: 0 0 0 1px #2d8a4e inset; }
+  .video-card.run-approved::before { content: '\2713 GOOD'; position: absolute; top: 6px; right: 6px; background: #2d8a4e; color: #fff; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 3px; letter-spacing: 0.5px; z-index: 2; }
+  .video-card.run-rejected { border-color: #8a2d2d; opacity: 0.55; }
   .video-card video { width: 100%; border-radius: 5px; margin-bottom: 7px; display: block; background: #000; }
   .no-video { height: 90px; display: flex; align-items: center; justify-content: center; color: #5b8a7a; font-size: 12px; }
   .char-name { font-size: 12px; font-weight: 700; color: #d4a355; }
@@ -588,7 +591,10 @@ function renderAll() {
     } else {
       for (var j = 0; j < shotRuns.length; j++) {
         var run = shotRuns[j];
-        vhtml += '<div class="video-card" id="run-' + run.id + '" data-drive-folder-url="' + esc(driveFolderUrl) + '" data-drive-filename="' + esc(run.drive_filename || '') + '">';
+        var runReviewClass = '';
+        if (run.fal_status === 'completed') runReviewClass = ' run-approved';
+        else if (run.fal_status === 'failed') runReviewClass = ' run-rejected';
+        vhtml += '<div class="video-card' + runReviewClass + '" id="run-' + run.id + '" data-drive-folder-url="' + esc(driveFolderUrl) + '" data-drive-filename="' + esc(run.drive_filename || '') + '">';
         if (run.video_url) {
           vhtml += '<video src="' + esc(run.video_url) + '" controls preload="metadata" playsinline onerror="showExpiry(this)"></video>';
           vhtml += '<div class="expiry-warning" onclick="refreshRun(\'' + run.id + '\',this)" title="Click to load the Drive copy">fal link expired \u2014 click to load Drive copy</div>';
@@ -800,8 +806,14 @@ function reviewRun(id, action) {
 
   for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
   apiCall({ action: 'review_run', run_id: id, status: 'approve' }).then(function() {
-    card.style.borderColor = '#2d8a4e';
-    toast('Run approved');
+    // Optimistically flip the local run row so the next render shows the
+    // green border immediately — no waiting for the next poll.
+    var runs = (allData && allData.runs) || [];
+    for (var k = 0; k < runs.length; k++) {
+      if (runs[k].id === id) { runs[k].fal_status = 'completed'; break; }
+    }
+    renderAll();
+    toast('Marked Good — green border locked in');
   }).catch(function(err) {
     for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
     toast(err.message, 'error');
