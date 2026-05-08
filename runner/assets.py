@@ -124,15 +124,16 @@ def lookup_scene(tag: str) -> str | None:
 # FLUX-schnell-derived LoRAs cap steps at 4. The runner falls back to the
 # model's published defaults when extra_input is empty/missing.
 CHARACTER_LORAS: dict[str, dict] = {
-    # Trained on Replicate (FLUX-dev-LoRA-trainer). Trigger words follow the
-    # rmt_<name>_<gender> convention used at training time.
-    "Maya":   {"lora": "pericepope/maya-roommates",     "version": None, "trigger": "rmt_maya_woman",   "extra_input": {}},
-    "Marcus": {"lora": "pericepope/marcus-roommates",   "version": None, "trigger": "rmt_marcus_man",   "extra_input": {}},
-    "Julian": {"lora": "pericepope/jullian-roommates",  "version": None, "trigger": "rmt_julian_man",   "extra_input": {}},  # NB: model URL spells "jullian"
-    "Lily":   {"lora": "pericepope/lily-roommates-v1",  "version": None, "trigger": "rmt_lilly_woman",  "extra_input": {}},  # NB: trigger spells "lilly"
-    # Not yet trained — shots using these route to needs_keyframe (manual upload).
-    "Peter":  {"lora": None, "version": None, "trigger": "rmt_peter_man", "extra_input": {}},
-    "Noah":   {"lora": None, "version": None, "trigger": "rmt_noah_man",  "extra_input": {}},
+    # All 7 trained on Replicate (FLUX-dev-LoRA-trainer). Trigger words follow
+    # the rmt_<name>_<gender> convention used at training time.
+    # If a trigger below doesn't match what was actually used at training
+    # time, the LoRA will fire weakly — tell the runner the actual word.
+    "Maya":   {"lora": "pericepope/maya-roommates",      "version": None, "trigger": "rmt_maya_woman",   "extra_input": {}},
+    "Marcus": {"lora": "pericepope/marcus-roommates",    "version": None, "trigger": "rmt_marcus_man",   "extra_input": {}},
+    "Julian": {"lora": "pericepope/jullian-roommates",   "version": None, "trigger": "rmt_julian_man",   "extra_input": {}},  # NB: model URL spells "jullian"
+    "Lily":   {"lora": "pericepope/lily-roommates-v1",   "version": None, "trigger": "rmt_lilly_woman",  "extra_input": {}},  # NB: trigger spells "lilly"
+    "Peter":  {"lora": "pericepope/peter-roommates",     "version": None, "trigger": "rmt_peter_man",    "extra_input": {}},
+    "Noah":   {"lora": "pericepope/noah-roommates-v1",   "version": None, "trigger": "rmt_noah_man",     "extra_input": {}},
 }
 
 # Setting triggers — translates @<slug> in prompts (e.g. @house) into the
