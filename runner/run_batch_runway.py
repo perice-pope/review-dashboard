@@ -576,7 +576,11 @@ def shot_type_default(shot: dict, key: str):
 def effective_duration(shot: dict) -> int:
     """API duration to send to image_to_video. Honors duration_seconds, then
     target_duration_seconds, then per-shot-type default, then VIDEO_DURATION.
-    Clamps to [2, 10] (gen4.5/Seedance2 limits)."""
+    Clamps to [4, 10] — Seedance 2 enforces a 4-second minimum at validation
+    time and gen4.5 accepts the same range, so 4 is the safe floor for both
+    animators. Editorial target_duration_seconds (e.g. 2s for an insert) is
+    still preserved for CapCut to trim against; only the API call is bumped
+    to 4s."""
     raw = shot.get("duration_seconds")
     if raw is None:
         raw = shot.get("target_duration_seconds")
@@ -584,7 +588,7 @@ def effective_duration(shot: dict) -> int:
         raw = shot_type_default(shot, "duration")
     if raw is None:
         raw = VIDEO_DURATION
-    return max(2, min(int(round(float(raw))), 10))
+    return max(4, min(int(round(float(raw))), 10))
 
 
 def effective_motion(shot: dict) -> str:
