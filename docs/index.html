@@ -421,11 +421,14 @@ function renderAll() {
     return;
   }
 
-  // Sort shots into editorial assembly order: by song, then scene, then shot_order.
-  // Shots with no scene_id appear under a synthetic "Unscheduled" group at the bottom.
+  // Sort shots into editorial assembly order: by song, then scene_index
+  // (the AUTHORED scene order — UUID lex-order has no relation to song-section
+  // progression), then shot_order. Shots with no scene_id appear under a
+  // synthetic "Unscheduled" group at the bottom.
   shots = shots.slice().sort(function(a, b) {
-    var sa = (a.song_id || '') + ' ' + (a.scene_id || '￿') + ' ' + (a.shot_order != null ? String(a.shot_order).padStart(6,'0') : '￿') + ' ' + (a.created_at || '');
-    var sb = (b.song_id || '') + ' ' + (b.scene_id || '￿') + ' ' + (b.shot_order != null ? String(b.shot_order).padStart(6,'0') : '￿') + ' ' + (b.created_at || '');
+    var pad = function(v) { return v != null ? String(v).padStart(6, '0') : '￿'; };
+    var sa = (a.song_id || '') + ' ' + pad(a.scene_index) + ' ' + (a.scene_id || '￿') + ' ' + pad(a.shot_order) + ' ' + (a.created_at || '');
+    var sb = (b.song_id || '') + ' ' + pad(b.scene_index) + ' ' + (b.scene_id || '￿') + ' ' + pad(b.shot_order) + ' ' + (b.created_at || '');
     return sa < sb ? -1 : sa > sb ? 1 : 0;
   });
 
@@ -1213,8 +1216,9 @@ function downloadApproved() {
 
   // Sort: song → scene → shot_order → created_at
   approved.sort(function(a, b){
-    var sa = (a.song_id || '') + ' ' + (a.scene_id || '￿') + ' ' + (a.shot_order != null ? String(a.shot_order).padStart(6,'0') : '￿') + ' ' + (a.created_at || '');
-    var sb = (b.song_id || '') + ' ' + (b.scene_id || '￿') + ' ' + (b.shot_order != null ? String(b.shot_order).padStart(6,'0') : '￿') + ' ' + (b.created_at || '');
+    var pad = function(v){ return v != null ? String(v).padStart(6,'0') : '￿'; };
+    var sa = (a.song_id || '') + ' ' + pad(a.scene_index) + ' ' + (a.scene_id || '￿') + ' ' + pad(a.shot_order) + ' ' + (a.created_at || '');
+    var sb = (b.song_id || '') + ' ' + pad(b.scene_index) + ' ' + (b.scene_id || '￿') + ' ' + pad(b.shot_order) + ' ' + (b.created_at || '');
     return sa < sb ? -1 : sa > sb ? 1 : 0;
   });
 
@@ -1247,7 +1251,7 @@ function downloadApproved() {
       lines.push('### SONG: ' + song);
       lastSong = song; lastScene = null;
     }
-    var sceneLabel = s.scene_id ? ('Scene ' + s.scene_id.substring(0,8)) : 'Unscheduled';
+    var sceneLabel = s.scene_id ? ('Scene ' + ((s.scene_index != null) ? (s.scene_index + 1) : s.scene_id.substring(0,8))) : 'Unscheduled';
     if (sceneLabel !== lastScene) {
       lines.push('');
       lines.push('  ── ' + sceneLabel + ' ──');
