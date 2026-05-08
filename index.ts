@@ -244,10 +244,17 @@ async function fetchValidScenes(): Promise<string[]> {
 async function handleAction(body: Record<string, unknown>) {
   switch (body.action) {
     case "review_run": {
-      const newStatus = body.status === "approve" ? "completed" : "failed";
-      const updates: Record<string, unknown> = { fal_status: newStatus };
-      if (body.status === "reject")
+      // review_status lives in its own column so the runner's fal_status
+      // (which tracks render progress) stays separate from the human's
+      // verdict on the take. Toggling Good a second time clears it.
+      const verdict = body.status === "approve" ? "approved" : "rejected";
+      const updates: Record<string, unknown> = {
+        review_status: verdict,
+        reviewed_at: new Date().toISOString(),
+      };
+      if (body.status === "reject") {
         updates.error_message = "Rejected in review";
+      }
       const { error } = await client
         .from("generation_runs")
         .update(updates)
