@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from assets import (  # noqa: E402
     CHARACTERS, SCENES, CHARACTER_LORAS, INSERT_MODEL, SETTING_TRIGGERS,
     lookup_character, lookup_scene, lookup_lora, all_loras_ready,
+    trigger_with_hint,
 )
 
 try:
@@ -755,9 +756,9 @@ _replicate_hdr = {
 
 
 # Translate @<name> tokens in the existing runway_prompt to the trained LoRA's
-# trigger word. Looks up character LoRAs first (e.g. @maya → rmt_maya_woman)
-# then setting triggers (e.g. @house → RMT_HOUSE). Tags with no match stay
-# as @ tokens (so the model treats them as plain text or ignores them).
+# trigger token (trigger word + optional prompt_hint). Looks up character LoRAs
+# first (e.g. @maya → "rmt_maya_woman, short hair"), then setting triggers
+# (e.g. @house → RMT_HOUSE). Unknown @-tags pass through unchanged.
 def trigger_translate_prompt(prompt: str) -> str:
     if not prompt:
         return prompt
@@ -765,7 +766,7 @@ def trigger_translate_prompt(prompt: str) -> str:
         raw = m.group(1)
         info = lookup_lora(raw)
         if info:
-            return info["trigger"]
+            return trigger_with_hint(info)
         setting = SETTING_TRIGGERS.get(raw.lower())
         if setting:
             return setting
@@ -1013,9 +1014,10 @@ def submit_replicate_inpaint(prompt: str, lora_info: dict, image_url: str,
 
 def _strip_other_triggers(prompt: str, keep_trigger: str) -> str:
     """
-    Remove every character LoRA's trigger word from `prompt` except the one
-    we want to keep. Used so each compose pass focuses the LoRA on its own
-    character without confusing the model with other characters' triggers.
+    Remove every character LoRA's trigger token (and its prompt_hint) from
+    `prompt` except the one we want to keep. Used so each compose pass focuses
+    on its own character — both the trigger word AND any per-character hint
+    like Maya's "short hair" only fire in that character's own pass.
     """
     if not prompt:
         return prompt
@@ -1024,8 +1026,12 @@ def _strip_other_triggers(prompt: str, keep_trigger: str) -> str:
         trig = (info or {}).get("trigger") or ""
         if not trig or trig == keep_trigger:
             continue
-        # Match the trigger word as a whole token, optionally followed by a
-        # comma and whitespace. Case-insensitive.
+        # Strip the FULL trigger+hint atom first (so Maya's "short hair" comes
+        # out cleanly in Marcus's pass), then the bare trigger as a backstop
+        # in case the prompt has the trigger without its hint.
+        full = trigger_with_hint(info)
+        if full and full != trig:
+            out = re.sub(rf"\b{re.escape(full)}\b\s*,?\s*", "", out, flags=re.IGNORECASE)
         out = re.sub(rf"\b{re.escape(trig)}\b\s*,?\s*", "", out, flags=re.IGNORECASE)
     # Squash double spaces / commas left behind
     out = re.sub(r"\s+,", ",", out)

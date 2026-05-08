@@ -126,15 +126,29 @@ def lookup_scene(tag: str) -> str | None:
 CHARACTER_LORAS: dict[str, dict] = {
     # All 7 trained on Replicate (FLUX-dev-LoRA-trainer). Trigger words follow
     # the rmt_<name>_<gender> convention used at training time.
-    # If a trigger below doesn't match what was actually used at training
-    # time, the LoRA will fire weakly — tell the runner the actual word.
-    "Maya":   {"lora": "pericepope/maya-roommates",      "version": None, "trigger": "rmt_maya_woman",   "extra_input": {}},
-    "Marcus": {"lora": "pericepope/marcus-roommates",    "version": None, "trigger": "rmt_marcus_man",   "extra_input": {}},
-    "Julian": {"lora": "pericepope/jullian-roommates",   "version": None, "trigger": "rmt_julian_man",   "extra_input": {}},  # NB: model URL spells "jullian"
-    "Lily":   {"lora": "pericepope/lily-roommates-v1",   "version": None, "trigger": "rmt_lilly_woman",  "extra_input": {}},  # NB: trigger spells "lilly"
-    "Peter":  {"lora": "pericepope/peter-roommates",     "version": None, "trigger": "rmt_peter_man",    "extra_input": {}},
-    "Noah":   {"lora": "pericepope/noah-roommates-v1",   "version": None, "trigger": "rmt_noah_man",     "extra_input": {}},
+    #
+    # `prompt_hint` is appended after the trigger word every time the character
+    # is referenced. Use it to nail features the LoRA encodes weakly. Example:
+    # Maya's training data didn't lock in her short haircut strongly enough,
+    # so we always add "short hair" to keep her on-model.
+    "Maya":   {"lora": "pericepope/maya-roommates",      "version": None, "trigger": "rmt_maya_woman",   "prompt_hint": "short hair", "extra_input": {}},
+    "Marcus": {"lora": "pericepope/marcus-roommates",    "version": None, "trigger": "rmt_marcus_man",   "prompt_hint": "",           "extra_input": {}},
+    "Julian": {"lora": "pericepope/jullian-roommates",   "version": None, "trigger": "rmt_julian_man",   "prompt_hint": "",           "extra_input": {}},  # NB: model URL spells "jullian"
+    "Lily":   {"lora": "pericepope/lily-roommates-v1",   "version": None, "trigger": "rmt_lilly_woman",  "prompt_hint": "",           "extra_input": {}},  # NB: trigger spells "lilly"
+    "Peter":  {"lora": "pericepope/peter-roommates",     "version": None, "trigger": "rmt_peter_man",    "prompt_hint": "",           "extra_input": {}},
+    "Noah":   {"lora": "pericepope/noah-roommates-v1",   "version": None, "trigger": "rmt_noah_man",     "prompt_hint": "",           "extra_input": {}},
 }
+
+
+def trigger_with_hint(info: dict | None) -> str:
+    """Return the full prompt token for a character: trigger + optional hint.
+    Treated as one atomic unit by the runner — translation, deduping, and
+    cross-pass stripping all match against this combined form."""
+    if not info:
+        return ""
+    trigger = info.get("trigger") or ""
+    hint = (info.get("prompt_hint") or "").strip()
+    return f"{trigger}, {hint}" if hint else trigger
 
 # Setting triggers — translates @<slug> in prompts (e.g. @house) into the
 # trained LoRA trigger word. Used by the runner during prompt processing for
