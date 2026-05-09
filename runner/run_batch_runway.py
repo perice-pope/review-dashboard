@@ -505,6 +505,59 @@ def save_to_drive(folder_name: str, filename: str, video_url: str) -> str | None
     return None
 
 
+def save_still_to_drive(folder_name: str, filename: str, image_url: str) -> str | None:
+    """
+    Replicate's delivery URLs are short-lived (~1-5h). Stills must be moved
+    to permanent storage immediately after generation, before the URL expires.
+
+    Downloads the PNG bytes, uploads to Drive via the Apps Script `upload`
+    endpoint (action=upload returns a fileId), and returns the bare fileId
+    so it can be stored in production_queue.keyframe_image_url. The dashboard
+    already renders bare Drive IDs through the lh3.googleusercontent.com
+    thumbnail proxy.
+
+    Returns None on any failure — caller should fall back to storing the raw
+    URL so the still is at least viewable for a short window.
+    """
+    if not DRIVE_WEBAPP_URL:
+        print("    ⚠  DRIVE_WEBAPP_URL not set — keeping Replicate URL")
+        return None
+    try:
+        png_bytes = _replicate_fetch(image_url, timeout=60)
+    except Exception as e:
+        print(f"    ⚠  Failed to download still bytes ({image_url[:60]}…): {e}")
+        return None
+    if not png_bytes or len(png_bytes) < 1000:
+        print(f"    ⚠  Still download too small ({len(png_bytes or b'')} bytes) — keeping URL")
+        return None
+    payload = {
+        "action":        "upload",
+        "folder":        folder_name,
+        "filename":      filename,
+        "contentBase64": base64.b64encode(png_bytes).decode("ascii"),
+        "mimeType":      "image/png",
+    }
+    status, resp = http(
+        DRIVE_WEBAPP_URL, method="POST",
+        headers={"Content-Type": "application/json"},
+        data=payload, timeout=300,
+    )
+    if status == 200 and isinstance(resp, dict) and resp.get("fileId"):
+        return resp["fileId"]
+    print(f"    ⚠  Still upload failed [{status}]: {str(resp)[:200]}")
+    return None
+
+
+def _replicate_fetch(url: str, timeout: int = 60) -> bytes:
+    """Fetch raw bytes from a URL with the runner's User-Agent (Replicate
+    rejects the default Python UA with 403 on some endpoints)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "roommates-runner/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        if r.status != 200:
+            raise RuntimeError(f"GET {url[:80]} returned {r.status}")
+        return r.read()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Aspect ratio mapping (DB → image, then → video)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1151,13 +1204,24 @@ def run_inpaint_compose(shot: dict, prompt_raw: str, img_ratio: str, db_id: str)
 
     # Final canvas is the composed keyframe — flip to still_review for human approval
     triggers = [lookup_lora(c)["trigger"] for c in chars]
+
+    # Move to Drive before Replicate's CDN expires the canvas URL.
+    song_title = shot.get("song_title") or "Unknown Song"
+    shot_name  = shot.get("shot_name") or "shot"
+    file_id = save_still_to_drive(
+        f"{song_title} - Generated Stills",
+        f"{shot_name}.png",
+        canvas_url,
+    )
+    stored = file_id or canvas_url
+
     update_shot(
         db_id,
         status             = "still_review",
-        keyframe_image_url = canvas_url,
-        review_notes       = f"Iterative inpaint compose: {len(chars)} chars ({','.join(triggers)})",
+        keyframe_image_url = stored,
+        review_notes       = f"Iterative inpaint compose: {len(chars)} chars ({','.join(triggers)})" + (" → Drive" if file_id else " (URL — Drive upload failed)"),
     )
-    print(f"  DONE — composed {len(chars)}-character keyframe → {canvas_url[:80]}…")
+    print(f"  DONE — composed {len(chars)}-character keyframe → {('Drive ' + file_id) if file_id else canvas_url[:80] + '…'}")
 
 
 def run_compose_kit(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> None:
@@ -1284,11 +1348,21 @@ def run_replicate_insert(shot: dict, prompt_raw: str, img_ratio: str, db_id: str
                 raise RuntimeError(f"Replicate succeeded with no output URL: {result}")
             print(f"  [Stage 1 / insert] still OK → {still_url[:80]}…")
 
+            # Move to Drive immediately — Replicate URLs expire ~1-5h.
+            song_title = shot.get("song_title") or "Unknown Song"
+            shot_name  = shot.get("shot_name") or "shot"
+            file_id = save_still_to_drive(
+                f"{song_title} - Generated Stills",
+                f"{shot_name}.png",
+                still_url,
+            )
+            stored = file_id or still_url
+
             update_shot(
                 db_id,
                 status             = "still_review",
-                keyframe_image_url = still_url,
-                review_notes       = f"Stage 1 insert: {INSERT_MODEL['lora']} {pred_id[:8]}",
+                keyframe_image_url = stored,
+                review_notes       = f"Stage 1 insert: {INSERT_MODEL['lora']} {pred_id[:8]}" + (" → Drive" if file_id else " (URL — Drive upload failed)"),
             )
             return
         except Exception as e:
@@ -1336,11 +1410,20 @@ def run_replicate_still(shot: dict, prompt_raw: str, img_ratio: str, db_id: str)
                 raise RuntimeError(f"Replicate succeeded with no output URL: {result}")
             print(f"  [Stage 1] still OK → {still_url[:80]}…")
 
+            song_title = shot.get("song_title") or "Unknown Song"
+            shot_name  = shot.get("shot_name") or "shot"
+            file_id = save_still_to_drive(
+                f"{song_title} - Generated Stills",
+                f"{shot_name}.png",
+                still_url,
+            )
+            stored = file_id or still_url
+
             update_shot(
                 db_id,
                 status             = "still_review",
-                keyframe_image_url = still_url,
-                review_notes       = f"Stage 1: Replicate {pred_id[:8]} ({','.join(triggers)})",
+                keyframe_image_url = stored,
+                review_notes       = f"Stage 1: Replicate {pred_id[:8]} ({','.join(triggers)})" + (" → Drive" if file_id else " (URL — Drive upload failed)"),
             )
             return
         except Exception as e:
