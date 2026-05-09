@@ -1250,14 +1250,21 @@ def run_compose_kit(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> 
         f"clean stage / setting, illustration style"
     )
     print(f"  [Compose Kit] backdrop via {INSERT_MODEL['lora']}")
+    song_title = shot.get("song_title") or "Unknown Song"
+    shot_name  = shot.get("shot_name") or "shot"
+    kit_folder = f"{song_title} - Composition Kits"
+
     backdrop_url = None
     try:
         pred = submit_replicate_still(backdrop_prompt, [INSERT_MODEL], aspect)
         result = poll_replicate(pred)
-        backdrop_url = first_output(result)
-        if not backdrop_url:
+        raw_url = first_output(result)
+        if not raw_url:
             raise RuntimeError(f"backdrop returned no output: {result}")
-        print(f"  [Compose Kit] backdrop OK → {backdrop_url[:80]}…")
+        # Move to Drive immediately — Replicate URLs expire ~30-60 min.
+        file_id = save_still_to_drive(kit_folder, f"{shot_name}_backdrop.png", raw_url)
+        backdrop_url = f"https://lh3.googleusercontent.com/d/{file_id}=s2048" if file_id else raw_url
+        print(f"  [Compose Kit] backdrop OK → {('Drive ' + file_id) if file_id else raw_url[:80] + '…'}")
     except Exception as e:
         update_shot(db_id, status="needs_keyframe",
                     review_notes=f"Backdrop generation failed: {str(e)[:300]}. "
@@ -1282,11 +1289,13 @@ def run_compose_kit(shot: dict, prompt_raw: str, img_ratio: str, db_id: str) -> 
         try:
             pred = submit_replicate_still(solo_prompt, [info], aspect)
             result = poll_replicate(pred)
-            url = first_output(result)
-            if not url:
+            raw_url = first_output(result)
+            if not raw_url:
                 raise RuntimeError(f"{name} returned no output: {result}")
-            print(f"  [Compose Kit] {name} OK → {url[:80]}…")
-            char_assets.append({"name": name, "url": url})
+            file_id = save_still_to_drive(kit_folder, f"{shot_name}_{name.lower()}.png", raw_url)
+            stored = f"https://lh3.googleusercontent.com/d/{file_id}=s2048" if file_id else raw_url
+            print(f"  [Compose Kit] {name} OK → {('Drive ' + file_id) if file_id else raw_url[:80] + '…'}")
+            char_assets.append({"name": name, "url": stored})
         except Exception as e:
             print(f"  [Compose Kit] {name} FAILED: {e}")
             char_assets.append({"name": name, "url": None, "error": str(e)[:200]})
