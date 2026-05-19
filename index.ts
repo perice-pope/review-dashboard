@@ -623,6 +623,18 @@ async function handleAction(body: Record<string, unknown>) {
         );
       }
 
+      // Files uploaded via the legacy saveVideosFromUrls path are private by
+      // default — iframe preview URLs redirect to Google sign-in for anyone
+      // who isn't the file owner. Share ANYONE_WITH_LINK before returning so
+      // the dashboard's iframe actually renders the video.
+      const shareUrl = `${DRIVE_WEBAPP_URL}?action=share&fileId=${encodeURIComponent(match.id)}`;
+      const shareResp = await fetch(shareUrl);
+      if (!shareResp.ok) {
+        throw new Error(`Drive share failed: ${shareResp.status} ${await shareResp.text()}`);
+      }
+      const shareData = await shareResp.json();
+      if (shareData.error) throw new Error(`Drive share error: ${shareData.error}`);
+
       return {
         success: true,
         file_id: match.id,

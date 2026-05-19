@@ -295,6 +295,12 @@ var currentFilter = 'all';
 var currentSongId = 'all';
 var allData = { songs: [], shots: [], runs: [] };
 
+// Persist resolved Drive preview URLs across the 12s auto-refresh re-renders.
+// renderAll() rebuilds grid.innerHTML from allData every poll, so without this
+// the iframe swapped in by refreshRun() would get wiped after one tick.
+// Key: run.id  Value: preview URL (https://drive.google.com/file/d/<id>/preview).
+var resolvedRunUrls = {};
+
 // ── Cost rates ──
 var COST_RATES = { kling: 0.028, omnihuman: 0.05 };
 
@@ -621,7 +627,10 @@ function renderAll() {
         if (run.review_status === 'approved') runReviewClass = ' run-approved';
         else if (run.review_status === 'rejected') runReviewClass = ' run-rejected';
         vhtml += '<div class="video-card' + runReviewClass + '" id="run-' + run.id + '" data-drive-folder-url="' + esc(driveFolderUrl) + '" data-drive-filename="' + esc(run.drive_filename || '') + '">';
-        if (run.video_url) {
+        var resolvedUrl = resolvedRunUrls[run.id];
+        if (resolvedUrl) {
+          vhtml += '<iframe src="' + esc(resolvedUrl) + '" class="drive-iframe" allow="autoplay"></iframe>';
+        } else if (run.video_url) {
           vhtml += '<video src="' + esc(run.video_url) + '" controls preload="metadata" playsinline onerror="showExpiry(this)"></video>';
           vhtml += '<div class="expiry-warning" onclick="refreshRun(\'' + run.id + '\',this)" title="Click to load the Drive copy">fal link expired \u2014 click to load Drive copy</div>';
         } else {
@@ -1343,14 +1352,22 @@ function refreshRun(runId, warningEl) {
   warningEl.textContent = 'loading Drive copy…';
   warningEl.style.pointerEvents = 'none';
   apiCall({ action: 'refresh_run', run_id: runId }).then(function(resp) {
+    // Persist across the 12s auto-refresh re-render — otherwise renderAll()
+    // rebuilds the card's innerHTML and the iframe disappears.
+    resolvedRunUrls[runId] = resp.preview_url;
+
     var card = document.getElementById('run-' + runId);
-    var video = card.querySelector('video');
-    if (video) {
+    if (card) {
+      var video = card.querySelector('video');
       var iframe = document.createElement('iframe');
       iframe.src = resp.preview_url;
       iframe.className = 'drive-iframe';
       iframe.allow = 'autoplay';
-      video.replaceWith(iframe);
+      if (video) {
+        video.replaceWith(iframe);
+      } else {
+        card.insertBefore(iframe, card.firstChild);
+      }
     }
     warningEl.remove();
     toast('Loaded from Drive');

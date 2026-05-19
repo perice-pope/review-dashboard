@@ -552,7 +552,7 @@ def _replicate_fetch(url: str, timeout: int = 60) -> bytes:
     """Fetch raw bytes from a URL with the runner's User-Agent (Replicate
     rejects the default Python UA with 403 on some endpoints)."""
     req = urllib.request.Request(url, headers={"User-Agent": "roommates-runner/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
         if r.status != 200:
             raise RuntimeError(f"GET {url[:80]} returned {r.status}")
         return r.read()
