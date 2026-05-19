@@ -624,9 +624,7 @@ async function handleAction(body: Record<string, unknown>) {
       }
 
       // Files uploaded via the legacy saveVideosFromUrls path are private by
-      // default — iframe preview URLs redirect to Google sign-in for anyone
-      // who isn't the file owner. Share ANYONE_WITH_LINK before returning so
-      // the dashboard's iframe actually renders the video.
+      // default. Share ANYONE_WITH_LINK so the URLs we return are reachable.
       const shareUrl = `${DRIVE_WEBAPP_URL}?action=share&fileId=${encodeURIComponent(match.id)}`;
       const shareResp = await fetch(shareUrl);
       if (!shareResp.ok) {
@@ -635,9 +633,15 @@ async function handleAction(body: Record<string, unknown>) {
       const shareData = await shareResp.json();
       if (shareData.error) throw new Error(`Drive share error: ${shareData.error}`);
 
+      // Prefer the direct-MP4 URL over the /preview iframe: /preview shows a
+      // "still transcoding" interstitial on first access (Drive lazily
+      // transcodes), whereas /uc?export=download streams the raw bytes that
+      // the HTML5 <video> element plays inline (Content-Disposition:attachment
+      // is ignored by <video>) with range-request seek support.
       return {
         success: true,
         file_id: match.id,
+        media_url: `https://drive.google.com/uc?id=${encodeURIComponent(match.id)}&export=download`,
         preview_url: `https://drive.google.com/file/d/${match.id}/preview`,
         folder_url: folderUrl,
       };

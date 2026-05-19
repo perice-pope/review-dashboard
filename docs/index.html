@@ -629,7 +629,10 @@ function renderAll() {
         vhtml += '<div class="video-card' + runReviewClass + '" id="run-' + run.id + '" data-drive-folder-url="' + esc(driveFolderUrl) + '" data-drive-filename="' + esc(run.drive_filename || '') + '">';
         var resolvedUrl = resolvedRunUrls[run.id];
         if (resolvedUrl) {
-          vhtml += '<iframe src="' + esc(resolvedUrl) + '" class="drive-iframe" allow="autoplay"></iframe>';
+          // Direct MP4 from Drive (uc?export=download) plays inline in <video>;
+          // we skip the /preview iframe because Drive's player shows a "still
+          // transcoding" interstitial on first access for many files.
+          vhtml += '<video src="' + esc(resolvedUrl) + '" controls preload="metadata" playsinline></video>';
         } else if (run.video_url) {
           vhtml += '<video src="' + esc(run.video_url) + '" controls preload="metadata" playsinline onerror="showExpiry(this)"></video>';
           vhtml += '<div class="expiry-warning" onclick="refreshRun(\'' + run.id + '\',this)" title="Click to load the Drive copy">fal link expired \u2014 click to load Drive copy</div>';
@@ -1352,21 +1355,32 @@ function refreshRun(runId, warningEl) {
   warningEl.textContent = 'loading Drive copy…';
   warningEl.style.pointerEvents = 'none';
   apiCall({ action: 'refresh_run', run_id: runId }).then(function(resp) {
-    // Persist across the 12s auto-refresh re-render — otherwise renderAll()
-    // rebuilds the card's innerHTML and the iframe disappears.
-    resolvedRunUrls[runId] = resp.preview_url;
+    // Prefer the direct-MP4 media_url (renders as <video>, plays the raw bytes
+    // and skips Drive's transcoding interstitial). Fall back to preview_url
+    // (iframe) for older edge-function responses that don't include media_url.
+    var directUrl = resp.media_url || resp.preview_url;
+    resolvedRunUrls[runId] = directUrl;
 
     var card = document.getElementById('run-' + runId);
     if (card) {
-      var video = card.querySelector('video');
-      var iframe = document.createElement('iframe');
-      iframe.src = resp.preview_url;
-      iframe.className = 'drive-iframe';
-      iframe.allow = 'autoplay';
-      if (video) {
-        video.replaceWith(iframe);
+      var oldMedia = card.querySelector('video, iframe.drive-iframe');
+      var newEl;
+      if (resp.media_url) {
+        newEl = document.createElement('video');
+        newEl.src = resp.media_url;
+        newEl.controls = true;
+        newEl.preload = 'metadata';
+        newEl.playsInline = true;
       } else {
-        card.insertBefore(iframe, card.firstChild);
+        newEl = document.createElement('iframe');
+        newEl.src = resp.preview_url;
+        newEl.className = 'drive-iframe';
+        newEl.allow = 'autoplay';
+      }
+      if (oldMedia) {
+        oldMedia.replaceWith(newEl);
+      } else {
+        card.insertBefore(newEl, card.firstChild);
       }
     }
     warningEl.remove();
