@@ -295,11 +295,24 @@ var currentFilter = 'all';
 var currentSongId = 'all';
 var allData = { songs: [], shots: [], runs: [] };
 
-// Persist resolved Drive preview URLs across the 12s auto-refresh re-renders.
+// Persist resolved Drive URLs across the 12s auto-refresh re-renders.
 // renderAll() rebuilds grid.innerHTML from allData every poll, so without this
-// the iframe swapped in by refreshRun() would get wiped after one tick.
-// Key: run.id  Value: preview URL (https://drive.google.com/file/d/<id>/preview).
-var resolvedRunUrls = {};
+// the swapped-in <video>/<iframe> would get wiped after one tick.
+//
+// Per run we track three things:
+//   resolvedMediaUrls[id]   — direct-MP4 URL for inline <video> playback
+//   resolvedPreviewUrls[id] — Drive /preview iframe URL (fallback)
+//   resolvedFileIds[id]     — file ID for the "Drive URL" copy button
+//   resolvedNeedsIframe[id] — set true once the <video> errors; subsequent
+//                             renders skip straight to iframe so we don't
+//                             flash a broken video on every poll.
+var resolvedMediaUrls = {};
+var resolvedPreviewUrls = {};
+var resolvedFileIds = {};
+var resolvedNeedsIframe = {};
+
+// Legacy alias — older code paths still reference resolvedRunUrls.
+var resolvedRunUrls = resolvedMediaUrls;
 
 // ── Cost rates ──
 var COST_RATES = { kling: 0.028, omnihuman: 0.05 };
@@ -627,12 +640,15 @@ function renderAll() {
         if (run.review_status === 'approved') runReviewClass = ' run-approved';
         else if (run.review_status === 'rejected') runReviewClass = ' run-rejected';
         vhtml += '<div class="video-card' + runReviewClass + '" id="run-' + run.id + '" data-drive-folder-url="' + esc(driveFolderUrl) + '" data-drive-filename="' + esc(run.drive_filename || '') + '">';
-        var resolvedUrl = resolvedRunUrls[run.id];
-        if (resolvedUrl) {
-          // Direct MP4 from Drive (uc?export=download) plays inline in <video>;
-          // we skip the /preview iframe because Drive's player shows a "still
-          // transcoding" interstitial on first access for many files.
-          vhtml += '<video src="' + esc(resolvedUrl) + '" controls preload="metadata" playsinline></video>';
+        var mediaUrl = resolvedMediaUrls[run.id];
+        var previewUrl = resolvedPreviewUrls[run.id];
+        if (resolvedNeedsIframe[run.id] && previewUrl) {
+          // Direct <video> previously errored — go straight to iframe so we
+          // don't flash a broken player every 12s on auto-refresh.
+          vhtml += '<iframe src="' + esc(previewUrl) + '" class="drive-iframe" allow="autoplay"></iframe>';
+        } else if (mediaUrl) {
+          // Try direct-MP4 first; on error, swap to iframe and remember.
+          vhtml += '<video src="' + esc(mediaUrl) + '" controls preload="metadata" playsinline onerror="onDirectVideoError(this,\'' + run.id + '\')"></video>';
         } else if (run.video_url) {
           vhtml += '<video src="' + esc(run.video_url) + '" controls preload="metadata" playsinline onerror="showExpiry(this)"></video>';
           vhtml += '<div class="expiry-warning" onclick="refreshRun(\'' + run.id + '\',this)" title="Click to load the Drive copy">fal link expired \u2014 click to load Drive copy</div>';
@@ -1351,15 +1367,30 @@ function showExpiry(videoEl) {
   if (warning) warning.classList.add('show');
 }
 
+// ── Direct-MP4 fallback ──
+// Some browsers refuse to play the Drive uc?export=download URL inline
+// (Content-Disposition:attachment hint, or a flaky 303 redirect chain).
+// When that happens, fall back to the /preview iframe and remember so the
+// next auto-refresh skips the broken-video flash.
+function onDirectVideoError(videoEl, runId) {
+  var previewUrl = resolvedPreviewUrls[runId];
+  if (!previewUrl) return;
+  resolvedNeedsIframe[runId] = true;
+  var iframe = document.createElement('iframe');
+  iframe.src = previewUrl;
+  iframe.className = 'drive-iframe';
+  iframe.allow = 'autoplay';
+  videoEl.replaceWith(iframe);
+}
+
 function refreshRun(runId, warningEl) {
   warningEl.textContent = 'loading Drive copy…';
   warningEl.style.pointerEvents = 'none';
   apiCall({ action: 'refresh_run', run_id: runId }).then(function(resp) {
-    // Prefer the direct-MP4 media_url (renders as <video>, plays the raw bytes
-    // and skips Drive's transcoding interstitial). Fall back to preview_url
-    // (iframe) for older edge-function responses that don't include media_url.
-    var directUrl = resp.media_url || resp.preview_url;
-    resolvedRunUrls[runId] = directUrl;
+    // Cache all three pieces so future re-renders + the Drive URL button work.
+    if (resp.media_url) resolvedMediaUrls[runId] = resp.media_url;
+    if (resp.preview_url) resolvedPreviewUrls[runId] = resp.preview_url;
+    if (resp.file_id) resolvedFileIds[runId] = resp.file_id;
 
     var card = document.getElementById('run-' + runId);
     if (card) {
@@ -1371,6 +1402,7 @@ function refreshRun(runId, warningEl) {
         newEl.controls = true;
         newEl.preload = 'metadata';
         newEl.playsInline = true;
+        newEl.onerror = function() { onDirectVideoError(newEl, runId); };
       } else {
         newEl = document.createElement('iframe');
         newEl.src = resp.preview_url;
@@ -1393,14 +1425,60 @@ function refreshRun(runId, warningEl) {
 }
 
 // ── Copy Drive URL ──
+// Copies the specific file URL when possible (so the user opens THE video,
+// not its parent folder). If we haven't resolved the file ID yet for this
+// run, calls refresh_run first to get it (and also caches media_url +
+// preview_url + shares the file as a side effect — same as clicking "load
+// Drive copy"). Falls back to folder URL if there is no run on the card.
 function copyDriveInfo(btn) {
   var card = btn.closest('.video-card');
-  var url = card.getAttribute('data-drive-folder-url');
+  if (!card) return;
+  var runId = card.id ? card.id.replace(/^run-/, '') : '';
+
+  var fileId = runId ? resolvedFileIds[runId] : null;
+  if (fileId) {
+    copyFileLink(fileId);
+    return;
+  }
+
+  // Have run id but no resolved file yet → fetch it
+  if (runId) {
+    var origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '...';
+    apiCall({ action: 'refresh_run', run_id: runId }).then(function(resp) {
+      if (resp.media_url) resolvedMediaUrls[runId] = resp.media_url;
+      if (resp.preview_url) resolvedPreviewUrls[runId] = resp.preview_url;
+      if (resp.file_id) resolvedFileIds[runId] = resp.file_id;
+      if (resp.file_id) {
+        copyFileLink(resp.file_id);
+      } else {
+        toast('No file_id returned', 'error');
+      }
+    }).catch(function(err) {
+      toast('Could not resolve file: ' + err.message, 'error');
+    }).then(function() {
+      btn.disabled = false;
+      btn.textContent = origText;
+    });
+    return;
+  }
+
+  // Last resort: copy what we have on the card
+  var folder = card.getAttribute('data-drive-folder-url');
   var filename = card.getAttribute('data-drive-filename');
-  var text = url || filename || '';
+  var text = folder || filename || '';
   if (!text) { toast('No Drive info available', 'error'); return; }
   navigator.clipboard.writeText(text).then(
-    function() { toast('Copied: ' + (url ? 'Drive folder URL' : filename)); },
+    function() { toast('Copied: ' + (folder ? 'Drive folder URL' : filename)); },
+    function() { toast('Copy failed', 'error'); }
+  );
+}
+
+function copyFileLink(fileId) {
+  var url = 'https://drive.google.com/file/d/' + fileId + '/view';
+  navigator.clipboard.writeText(url).then(
+    function() { toast('Copied file URL'); },
     function() { toast('Copy failed', 'error'); }
   );
 }
