@@ -110,11 +110,38 @@ POLL_INTERVAL  = 10
 POLL_TIMEOUT   = 60 * 8
 VIDEO_DURATION = 10
 
+# Max shots to process per run. The GitHub workflow has a 30-min timeout; at
+# ~1–4 min/shot a full backlog can't drain in one run, so the step used to get
+# KILLED at 30 min (GitHub marks it 'cancelled' — the mystery "1am failure").
+# Cap each run to a chunk that finishes comfortably inside the window; the
+# 5-min cron keeps draining the rest. Override via BATCH_LIMIT env (0 = no cap).
+BATCH_LIMIT = int(_ENV.get("BATCH_LIMIT") or os.environ.get("BATCH_LIMIT") or 12)
+
 missing = [k for k, v in [("SUPABASE_URL", SUPABASE_URL),
                           ("SUPABASE_KEY", SUPABASE_KEY),
                           ("RUNWAY_API_KEY", RUNWAY_API_KEY)] if not v]
 if missing:
     sys.exit(f"Missing required env vars: {', '.join(missing)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Loud-failure tracking (backport of REFACTOR-PLAN §3.1)
+#  The runner used to swallow every per-shot error and exit 0, so a dead
+#  pipeline (e.g. Runway credit exhaustion) showed a GREEN GitHub run for days.
+#  STATS records real outcomes; main() reads it to (a) print a summary,
+#  (b) emit GitHub ::error:: annotations, and (c) exit non-zero so the run
+#  goes RED and you get GitHub's failure email.
+# ─────────────────────────────────────────────────────────────────────────────
+STATS = {
+    "attempted": 0,   # shots we actually tried to render (excludes human-gated)
+    "succeeded": 0,   # produced a video / still
+    "failed":    0,   # exhausted retries or hard-failed
+    "gated":     0,   # needs_keyframe / human-required (not a failure)
+    "credit_failures": 0,  # subset of failures caused by "not enough credits"
+}
+
+def _is_credit_error(err) -> bool:
+    return "not enough credits" in str(err).lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -191,14 +218,20 @@ def fetch_ready_shots():
     # Pick up shots in any state where the runner has work to do:
     #   queued          → fresh shot, generate still via Replicate (or fall back)
     #   revision_needed → user clicked Animate or revised; runner picks next stage
-    q = urllib.parse.urlencode({
+    params = {
         "primary_tool": "eq.runway_gen4_references",
         "status":       "in.(queued,revision_needed)",
         "order":        "created_at.asc",
-    })
+    }
+    # Cap the batch so the run finishes inside the workflow's 30-min timeout.
+    if BATCH_LIMIT > 0:
+        params["limit"] = BATCH_LIMIT
+    q = urllib.parse.urlencode(params)
     status, resp = http(f"{SUPABASE_URL}/rest/v1/production_queue?{q}", headers=SB_HEADERS)
     if status != 200:
         sys.exit(f"Supabase fetch failed [{status}]: {resp}")
+    if BATCH_LIMIT > 0 and isinstance(resp, list) and len(resp) == BATCH_LIMIT:
+        print(f"(batch capped at {BATCH_LIMIT} shots this run — the cron will continue draining)")
     return resp or []
 
 
@@ -731,6 +764,7 @@ def process_shot(shot: dict) -> None:
 
     # Stop early for human-gated states. No API call.
     if path == "needs_keyframe":
+        STATS["gated"] += 1
         chars = parse_chars(shot.get("characters_used"))
         ready, missing = all_loras_ready(chars)
         if len(chars) > MAX_LORA_STACK:
@@ -748,8 +782,12 @@ def process_shot(shot: dict) -> None:
         print(f"  → needs_keyframe — {note}")
         return
 
+    # Past the human gate: this shot is one we actually attempt to render.
+    STATS["attempted"] += 1
+
     prompt_raw = shot.get("runway_prompt") or shot.get("final_prompt") or ""
     if not prompt_raw:
+        STATS["failed"] += 1
         update_shot(db_id, status="failed", review_notes="runway_prompt empty")
         print("  FAILED — runway_prompt is empty")
         return
@@ -795,6 +833,7 @@ def process_shot(shot: dict) -> None:
         return
 
     # Should never hit; routing has covered everything above.
+    STATS["failed"] += 1
     update_shot(db_id, status="failed",
                 review_notes=f"Unrouted shot — path={path}")
     print(f"  FAILED — unrouted ({path})")
@@ -1373,12 +1412,16 @@ def run_replicate_insert(shot: dict, prompt_raw: str, img_ratio: str, db_id: str
                 keyframe_image_url = stored,
                 review_notes       = f"Stage 1 insert: {INSERT_MODEL['lora']} {pred_id[:8]}" + (" → Drive" if file_id else " (URL — Drive upload failed)"),
             )
+            STATS["succeeded"] += 1
             return
         except Exception as e:
             last_err = e
             print(f"  [Stage 1 / insert] attempt {attempt} failed: {e}")
             time.sleep(3)
 
+    STATS["failed"] += 1
+    if _is_credit_error(last_err):
+        STATS["credit_failures"] += 1
     update_shot(db_id, status="revision_needed",
                 review_notes=f"Insert still failed after {MAX_ATTEMPTS}: {str(last_err)[:300]}")
     print(f"  FAILED — insert still exhausted")
@@ -1434,12 +1477,16 @@ def run_replicate_still(shot: dict, prompt_raw: str, img_ratio: str, db_id: str)
                 keyframe_image_url = stored,
                 review_notes       = f"Stage 1: Replicate {pred_id[:8]} ({','.join(triggers)})" + (" → Drive" if file_id else " (URL — Drive upload failed)"),
             )
+            STATS["succeeded"] += 1
             return
         except Exception as e:
             last_err = e
             print(f"  [Stage 1] attempt {attempt} failed: {e}")
             time.sleep(3)
 
+    STATS["failed"] += 1
+    if _is_credit_error(last_err):
+        STATS["credit_failures"] += 1
     update_shot(db_id, status="revision_needed",
                 review_notes=f"Replicate still failed after {MAX_ATTEMPTS}: {str(last_err)[:300]}")
     print(f"  FAILED — Replicate exhausted")
@@ -1517,17 +1564,91 @@ def run_animate_keyframe(shot: dict, prompt_raw: str, vid_ratio: str, duration: 
             )
             record_generation_run(shot, video_url, filename, folder_url, duration, keyframe_uri)
             print(f"  DONE → v{next_version} → {video_url[:80]}…")
+            STATS["succeeded"] += 1
             return
         except Exception as e:
             last_err = e
             print(f"  attempt {attempt} failed: {e}")
             time.sleep(5)
 
+    STATS["failed"] += 1
+    if _is_credit_error(last_err):
+        STATS["credit_failures"] += 1
     update_shot(
         db_id, status="revision_needed",
         review_notes=f"Animate failed after {MAX_ATTEMPTS}: {str(last_err)[:300]}",
     )
     print(f"  FAILED — animate exhausted")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Heartbeat — write run outcome to system_state so the dashboard can show a
+#  loud banner instead of relying on the (misleadingly green) GitHub status.
+#  Best-effort: never let heartbeat failure crash the run. Silently no-ops if
+#  the system_state table doesn't exist yet (created in the React refactor).
+# ─────────────────────────────────────────────────────────────────────────────
+def write_heartbeat(ok: bool, reason: str | None) -> None:
+    payload = {
+        "id": 1,
+        "last_run_at":  datetime.now(timezone.utc).isoformat(),
+        "last_run_ok":  ok,
+        "succeeded":    STATS["succeeded"],
+        "failed":       STATS["failed"],
+        "failure_reason": reason,
+        "updated_at":   datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        # upsert single row (id=1). PostgREST merge-duplicates on the PK.
+        status, _ = http(
+            f"{SUPABASE_URL}/rest/v1/system_state",
+            method="POST",
+            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates"},
+            data=payload,
+        )
+        if status >= 400:
+            print(f"  (heartbeat skipped — system_state not ready [{status}])")
+    except Exception as e:
+        print(f"  (heartbeat skipped — {e})")
+
+
+def report_and_exit() -> None:
+    """Print a loud summary, emit GitHub annotations, and set the exit code.
+
+    The old behaviour was to always exit 0, so a fully-failed batch (e.g. credit
+    exhaustion) showed a GREEN GitHub run. Now: if we attempted shots and NONE
+    succeeded, we exit non-zero so the run goes RED and GitHub emails you.
+    """
+    a, s, f = STATS["attempted"], STATS["succeeded"], STATS["failed"]
+    g, cf = STATS["gated"], STATS["credit_failures"]
+    print("\n" + "=" * 60)
+    print(f"BATCH SUMMARY: {s} succeeded · {f} failed · {g} human-gated  (of {a} attempted)")
+
+    credit_dead = cf > 0 and s == 0 and a > 0
+    if credit_dead:
+        reason = "credits"
+        # GitHub Actions annotation → shows as a red error on the run + in email.
+        print("::error title=Runway credits exhausted::"
+              f"{cf}/{a} render attempts failed with 'not enough credits'. "
+              "Top up Runway — the pipeline is stalled until you do.")
+    elif a > 0 and s == 0:
+        reason = "all_failed"
+        print(f"::error title=All renders failed::0/{a} shots succeeded. "
+              "Check the log above for the failure reason.")
+    elif f > 0:
+        reason = "partial"
+        print(f"::warning title=Some renders failed::{f}/{a} shots failed; {s} succeeded.")
+    else:
+        reason = None
+
+    ok = not (a > 0 and s == 0)   # healthy unless we tried and produced nothing
+    write_heartbeat(ok, reason)
+
+    if not ok:
+        print("RESULT: ❌ pipeline unhealthy — exiting non-zero so this run goes RED.")
+        print("=" * 60)
+        sys.exit(1)
+    print("RESULT: ✅ pipeline healthy.")
+    print("=" * 60)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1542,6 +1663,7 @@ def main() -> None:
     shots = fetch_ready_shots()
     if not shots:
         print("No shots ready for Runway Gen-4 generation.")
+        write_heartbeat(True, None)   # healthy: nothing to do is a fine outcome
         return
 
     print(f"\n{len(shots)} shot(s) ready:\n")
@@ -1570,6 +1692,7 @@ def main() -> None:
         process_shot(shot)
 
     print("\nBatch complete.")
+    report_and_exit()
 
 
 if __name__ == "__main__":
