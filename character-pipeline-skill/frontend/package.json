@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "pack:skill": "node scripts/pack-skill.mjs",
+    "prebuild": "node scripts/pack-skill.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -15,6 +17,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
+    "archiver": "^7.0.1",
     "vite": "^5.4.0"
   }
 }
