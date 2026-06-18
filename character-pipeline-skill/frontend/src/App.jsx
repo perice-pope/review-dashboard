@@ -120,6 +120,7 @@ function Hero({ onBegin, labels }) {
       </p>
       <div className="start-row">
         <button className="btn btn-primary" onClick={onBegin}>Start building →</button>
+        <a className="btn btn-ghost" href="/character-pipeline-skill.zip" download>Download the skill</a>
         <span className="meta">~6 minutes · nothing leaves your browser</span>
       </div>
       <div className="value-row">
@@ -305,6 +306,9 @@ function StepLaunch({ s, onRestart }) {
           <CopyButton getText={brief} label="copy brief" />
           <code>{brief}</code>
         </div>
+        <p className="dim mb" style={{ marginTop: 14 }}>
+          Don’t have the skill yet? <a href="/character-pipeline-skill.zip" download>Download the Character Pipeline skill</a> and add it to Claude.
+        </p>
       </Panel>
 
       <Panel kicker="Asset checklist" kickerNote="set this up once">
