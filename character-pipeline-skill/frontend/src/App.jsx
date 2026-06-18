@@ -4,6 +4,18 @@ import {
   OptionCard, Field, Stepmap, CopyButton,
 } from './components.jsx'
 import * as P from './data/plan.js'
+import { CHECKOUT_URL, PRICE_LABEL, CHECKOUT_READY } from './config.js'
+
+// "Get the skill" → Lemon Squeezy checkout. With a real store URL, lemon.js opens
+// it as an overlay (class hook); until then it's a plain link to the placeholder.
+function GetSkillButton({ variant = 'primary' }) {
+  const cls = `btn btn-${variant}${CHECKOUT_READY ? ' lemonsqueezy-button' : ''}`
+  return (
+    <a className={cls} href={CHECKOUT_URL} target="_blank" rel="noopener noreferrer">
+      Get the skill{PRICE_LABEL ? ` — ${PRICE_LABEL}` : ''} →
+    </a>
+  )
+}
 
 const STEP_LABELS = ['Character', 'Assets', 'Setup', 'Model', 'Prompts', 'Launch']
 const TOTAL = 6
@@ -120,9 +132,12 @@ function Hero({ onBegin, labels }) {
       </p>
       <div className="start-row">
         <button className="btn btn-primary" onClick={onBegin}>Start building →</button>
-        <a className="btn btn-ghost" href="/character-pipeline-skill.zip" download>Download the skill</a>
+        <GetSkillButton variant="ghost" />
         <span className="meta">~6 minutes · nothing leaves your browser</span>
       </div>
+      <p className="meta">
+        Checkout delivers the skill plus a step-by-step setup guide — works with Claude Code or Claude Desktop, runs on your own keys.
+      </p>
       <div className="value-row">
         <Value k="Train" v="A character LoRA on Replicate — captioned to stay consistent." cost="~$2–4 one-time" />
         <Value k="Stills" v="A batch of on-model stills from your trained character." cost="under $1 / ~20" />
@@ -307,7 +322,9 @@ function StepLaunch({ s, onRestart }) {
           <code>{brief}</code>
         </div>
         <p className="dim mb" style={{ marginTop: 14 }}>
-          Don’t have the skill yet? <a href="/character-pipeline-skill.zip" download>Download the Character Pipeline skill</a> and add it to Claude.
+          Don’t have the skill yet?{' '}
+          <a href={CHECKOUT_URL} className={CHECKOUT_READY ? 'lemonsqueezy-button' : undefined} target="_blank" rel="noopener noreferrer">Get the Character Pipeline skill</a>
+          {' '}— it ships with a step-by-step setup guide for Claude Code or Desktop.
         </p>
       </Panel>
 

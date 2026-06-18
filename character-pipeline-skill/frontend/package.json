@@ -7,7 +7,6 @@
   "scripts": {
     "dev": "vite",
     "pack:skill": "node scripts/pack-skill.mjs",
-    "prebuild": "node scripts/pack-skill.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

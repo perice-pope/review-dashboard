@@ -1,9 +1,11 @@
-// Packs the Character Pipeline *skill* into public/character-pipeline-skill.zip
-// so the landing page can offer it as a download. Runs as `prebuild`, so Vercel
-// regenerates a fresh zip on every deploy.
+// Packs the Character Pipeline *skill* into skill-dist/character-pipeline-skill.zip
+// — the paid artifact you upload to Lemon Squeezy. Run manually with
+// `npm run pack:skill` whenever the skill changes, then re-upload to your store.
 //
-// Ships ONLY the skill (SKILL.md, README, scripts, references, .env.example).
-// Never the website (frontend/), never secrets (.env), never generated assets.
+// NOTE: output is skill-dist/ (NOT public/) on purpose — the skill is sold, so it
+// must never be served from the public site. Ships ONLY the skill (START_HERE,
+// SKILL.md, README, scripts, references, .env.example). Never the website
+// (frontend/), never secrets (.env), never generated assets.
 import { createWriteStream } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
@@ -12,11 +14,12 @@ import archiver from 'archiver'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const skillRoot = resolve(here, '..', '..')          // character-pipeline-skill/
-const outDir = resolve(here, '..', 'public')         // frontend/public/
+const outDir = resolve(here, '..', 'skill-dist')     // frontend/skill-dist/ (not served)
 const outFile = resolve(outDir, 'character-pipeline-skill.zip')
 
 // Curated allowlist — extracts as a clean `character-pipeline/` folder.
-const FILES = ['SKILL.md', 'README.md', '.env.example']
+// START_HERE.md first so it's the obvious thing a buyer opens.
+const FILES = ['START_HERE.md', 'SKILL.md', 'README.md', '.env.example']
 const DIRS = ['scripts', 'references']
 const IGNORE = ['**/__pycache__/**', '**/*.pyc', '**/.env', '**/*.zip', '**/.DS_Store']
 
