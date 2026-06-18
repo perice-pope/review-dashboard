@@ -1,0 +1,3 @@
+# Character Pipeline — Stage scripts. Buyer installs these in their own env.
+replicate>=1.0      # Stage 1 training + Stage 2 stills (Replicate)
+runwayml>=5.0       # Stage 3 animation (Runway image-to-video)
