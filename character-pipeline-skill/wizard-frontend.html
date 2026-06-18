@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Character Pipeline Builder — Build Your AI-Animated Band</title>
+<style>
+  /* ============================================================
+     CHARACTER PIPELINE BUILDER
+     A guided setup wizard for building an AI-animated character
+     pipeline. Self-contained. No install, no account, no network.
+     ============================================================ */
+
+  :root{
+    --bg:        #0e1015;   /* deep workspace */
+    --panel:     #171a22;   /* raised surface */
+    --panel-2:   #1f2330;   /* inset / fields */
+    --line:      #2a2f3d;   /* hairline rules */
+    --ink:       #e8eaf0;   /* primary text */
+    --ink-dim:   #9aa0b0;   /* secondary text */
+    --ink-faint: #646b7d;   /* captions / mono labels */
+    --accent:    #ff6a3d;   /* active step / signal — molten orange */
+    --good:      #4fd1a1;   /* confirm */
+    --radius:    10px;
+    --mono: ui-monospace,'SF Mono',"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans: -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+  }
+  :root{ --accent-soft: rgba(255,106,61,.12); --accent-line: rgba(255,106,61,.4); }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html{ scroll-behavior:smooth; }
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+  }
+  @media (prefers-reduced-motion: reduce){
+    *{ animation:none!important; transition:none!important; }
+    html{ scroll-behavior:auto; }
+  }
+
+  /* ---------- shell ---------- */
+  .shell{ max-width:880px; margin:0 auto; padding:0 20px 120px; }
+
+  /* ---------- top bar ---------- */
+  header.bar{
+    position:sticky; top:0; z-index:50;
+    background:rgba(14,16,21,.86);
+    backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .bar-inner{
+    max-width:880px; margin:0 auto; padding:14px 20px;
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+  }
+  .wordmark{ display:flex; align-items:center; gap:10px; font-weight:650; letter-spacing:-.01em; }
+  .wordmark .dot{
+    width:11px; height:11px; border-radius:3px; background:var(--accent);
+    box-shadow:0 0 14px var(--accent-line);
+  }
+  .wordmark small{
+    font-family:var(--mono); font-size:10px; color:var(--ink-faint);
+    text-transform:uppercase; letter-spacing:.18em; font-weight:500;
+    border:1px solid var(--line); padding:3px 7px; border-radius:5px;
+  }
+  .progress-mini{ font-family:var(--mono); font-size:11px; color:var(--ink-dim); letter-spacing:.05em; }
+  .progress-mini b{ color:var(--accent); }
+
+  /* progress track */
+  .track{ height:2px; background:var(--line); position:relative; }
+  .track-fill{ height:100%; background:var(--accent); width:0%; transition:width .5s cubic-bezier(.2,.8,.2,1); box-shadow:0 0 10px var(--accent-line);}
+
+  /* ---------- hero ---------- */
+  .hero{ padding:64px 0 40px; border-bottom:1px solid var(--line); }
+  .eyebrow{
+    font-family:var(--mono); font-size:11px; letter-spacing:.22em;
+    text-transform:uppercase; color:var(--accent); margin-bottom:22px;
+  }
+  .hero h1{
+    font-size:clamp(34px,6vw,58px); line-height:1.03; letter-spacing:-.03em;
+    font-weight:700; margin-bottom:20px;
+  }
+  .hero h1 .thin{ color:var(--ink-dim); font-weight:300; }
+  .hero p.lede{ font-size:18px; color:var(--ink-dim); max-width:60ch; margin-bottom:34px; }
+  .start-row{ display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+
+  .btn{
+    font-family:var(--sans); font-size:15px; font-weight:600;
+    padding:14px 26px; border-radius:var(--radius); border:1px solid transparent;
+    cursor:pointer; transition:transform .12s ease, background .15s ease, border-color .15s;
+    display:inline-flex; align-items:center; gap:10px;
+  }
+  .btn-primary{ background:var(--accent); color:#1a0d07; }
+  .btn-primary:hover{ transform:translateY(-1px); }
+  .btn-ghost{ background:transparent; color:var(--ink); border-color:var(--line); }
+  .btn-ghost:hover{ border-color:var(--ink-dim); }
+  .btn:disabled{ opacity:.4; cursor:not-allowed; transform:none; }
+  .btn[hidden]{ display:none; }
+
+  .hero .meta{ font-family:var(--mono); font-size:12px; color:var(--ink-faint); }
+
+  /* ---------- step map ---------- */
+  .stepmap{ display:flex; flex-wrap:wrap; gap:8px; margin-top:44px; }
+  .chip{
+    font-family:var(--mono); font-size:11px; color:var(--ink-faint);
+    border:1px solid var(--line); padding:7px 12px; border-radius:20px;
+    letter-spacing:.04em; display:flex; gap:8px; align-items:center;
+  }
+  .chip i{ font-style:normal; color:var(--ink-faint); }
+  .chip.done{ color:var(--good); border-color:rgba(79,209,161,.3); }
+  .chip.active{ color:var(--accent); border-color:var(--accent-line); background:var(--accent-soft); }
+
+  /* ---------- step panels ---------- */
+  .stage{ padding-top:48px; }
+  .step{ display:none; animation:rise .45s cubic-bezier(.2,.8,.2,1); }
+  .step.live{ display:block; }
+  @keyframes rise{ from{ opacity:0; transform:translateY(14px);} to{ opacity:1; transform:none;} }
+
+  .step-head{ display:flex; align-items:baseline; gap:16px; margin-bottom:8px; }
+  .step-num{
+    font-family:var(--mono); font-size:13px; color:var(--accent);
+    border:1px solid var(--accent-line); border-radius:6px; padding:4px 9px;
+    letter-spacing:.05em; flex-shrink:0;
+  }
+  .step h2{ font-size:clamp(24px,4vw,34px); letter-spacing:-.02em; font-weight:680; }
+  .step .sub{ color:var(--ink-dim); margin:6px 0 30px; max-width:62ch; }
+
+  /* fields */
+  .field{ margin-bottom:26px; }
+  .field label{ display:block; font-weight:600; margin-bottom:6px; font-size:15px; }
+  .field .hint{ color:var(--ink-faint); font-size:13px; margin-bottom:10px; }
+  input[type=text], textarea, select{
+    width:100%; background:var(--panel-2); border:1px solid var(--line);
+    color:var(--ink); font-family:var(--sans); font-size:15px;
+    padding:13px 15px; border-radius:var(--radius); transition:border-color .15s;
+  }
+  input[type=text]:focus, textarea:focus, select:focus{
+    outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft);
+  }
+  textarea{ resize:vertical; min-height:84px; }
+
+  /* option cards */
+  .opts{ display:grid; gap:10px; }
+  .opts.two{ grid-template-columns:1fr 1fr; }
+  .opts.three{ grid-template-columns:repeat(3,1fr); }
+  @media(max-width:620px){ .opts.two,.opts.three{ grid-template-columns:1fr; } }
+  .opt{
+    background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius);
+    padding:16px; cursor:pointer; transition:border-color .15s, background .15s;
+    display:flex; gap:13px; align-items:flex-start;
+  }
+  .opt:hover{ border-color:var(--ink-dim); }
+  .opt.sel{ border-color:var(--accent); background:var(--accent-soft); }
+  .opt .tick{
+    width:18px; height:18px; border-radius:50%; border:1.5px solid var(--ink-faint);
+    flex-shrink:0; margin-top:2px; position:relative; transition:.15s;
+  }
+  .opt.sel .tick{ border-color:var(--accent); background:var(--accent); }
+  .opt.sel .tick::after{ content:""; position:absolute; inset:4px; border-radius:50%; background:#1a0d07; }
+  .opt .ot{ font-weight:600; font-size:15px; }
+  .opt .od{ color:var(--ink-dim); font-size:13px; margin-top:3px; }
+
+  /* nav */
+  .nav{ display:flex; justify-content:space-between; align-items:center; margin-top:38px; padding-top:24px; border-top:1px solid var(--line); }
+  .nav .note{ font-family:var(--mono); font-size:11px; color:var(--ink-faint); }
+
+  /* ---------- generated brief / output ---------- */
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:30px; margin-bottom:22px;
+  }
+  .panel.accent{ border-color:var(--accent-line); }
+  .panel h3{
+    font-size:13px; font-family:var(--mono); text-transform:uppercase;
+    letter-spacing:.16em; color:var(--accent); margin-bottom:18px;
+    display:flex; align-items:center; gap:10px;
+  }
+  .panel h3 .n{ color:var(--ink-faint); }
+  .kv{ display:grid; grid-template-columns:160px 1fr; gap:10px 20px; margin-bottom:6px; }
+  .kv dt{ font-family:var(--mono); font-size:12px; color:var(--ink-faint); letter-spacing:.04em; padding-top:2px; }
+  .kv dd{ color:var(--ink); }
+  @media(max-width:560px){ .kv{ grid-template-columns:1fr; gap:2px 0; } .kv dd{ margin-bottom:12px; } }
+
+  .codeblock{
+    background:#0a0c11; border:1px solid var(--line); border-radius:var(--radius);
+    padding:16px 18px; font-family:var(--mono); font-size:13px; line-height:1.7;
+    color:#c9d1e0; overflow-x:auto; white-space:pre-wrap; position:relative;
+    margin:10px 0;
+  }
+  .codeblock .tok-key{ color:var(--accent); }
+  .codeblock .tok-var{ color:var(--good); }
+  .copy{
+    position:absolute; top:10px; right:10px;
+    font-family:var(--mono); font-size:11px; color:var(--ink-dim);
+    background:var(--panel-2); border:1px solid var(--line); border-radius:6px;
+    padding:5px 10px; cursor:pointer; transition:.15s; letter-spacing:.04em;
+  }
+  .copy:hover{ color:var(--ink); border-color:var(--ink-dim); }
+  .copy.ok{ color:var(--good); border-color:rgba(79,209,161,.4); }
+
+  .checklist{ list-style:none; display:grid; gap:9px; }
+  .checklist li{
+    display:flex; gap:12px; align-items:flex-start; padding:12px 14px;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius);
+    font-size:14px;
+  }
+  .checklist li .mk{ color:var(--accent); font-family:var(--mono); flex-shrink:0; }
+
+  .callout{
+    border-left:2px solid var(--accent); background:var(--accent-soft);
+    padding:13px 16px; border-radius:0 var(--radius) var(--radius) 0;
+    font-size:14px; color:var(--ink); margin:14px 0;
+  }
+  .callout b{ color:var(--accent); }
+
+  .daygrid{ display:grid; gap:10px; }
+  .day{ display:flex; gap:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px; }
+  .day .dn{ font-family:var(--mono); font-size:11px; color:var(--accent); flex-shrink:0; width:54px; letter-spacing:.05em; padding-top:2px; }
+  .day .dt{ font-size:14px; }
+  .day .dt b{ display:block; margin-bottom:2px; }
+  .day .dt span{ color:var(--ink-dim); }
+
+  .outro-actions{ display:flex; gap:12px; flex-wrap:wrap; margin-top:8px; }
+
+  footer{ margin-top:60px; padding-top:26px; border-top:1px solid var(--line); font-family:var(--mono); font-size:11px; color:var(--ink-faint); letter-spacing:.04em; line-height:1.9;}
+
+  .pulse{ animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.55;} }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="bar-inner">
+    <div class="wordmark"><span class="dot"></span> Pipeline Builder <small>setup wizard</small></div>
+    <div class="progress-mini" id="miniProg" hidden>STEP <b id="miniN">1</b> / 6</div>
+  </div>
+  <div class="track"><div class="track-fill" id="trackFill"></div></div>
+</header>
+
+<div class="shell">
+
+  <!-- ============ HERO ============ -->
+  <section class="hero" id="hero">
+    <div class="eyebrow">AI-animated character pipeline · guided build</div>
+    <h1>Build your own animated band.<br><span class="thin">This wizard sets up the whole pipeline with you.</span></h1>
+    <p class="lede">Answer a handful of questions about your character and your music. The builder walks you through training a character model, writing your prompts, organizing your assets, and your first week of production — every step customized to what you're making.</p>
+    <div class="start-row">
+      <button class="btn btn-primary" onclick="begin()">Start building →</button>
+      <span class="meta">~8 minutes · nothing leaves your browser</span>
+    </div>
+    <div class="stepmap" id="stepmap"></div>
+  </section>
+
+  <!-- ============ STAGE ============ -->
+  <section class="stage" id="stage" hidden>
+
+    <!-- STEP 1 — concept -->
+    <div class="step" data-step="1">
+      <div class="step-head"><span class="step-num">01</span><h2>Your character</h2></div>
+      <p class="sub">Start with one character. You'll add the rest later using the same system — but the whole pipeline is easier to learn with a single character first.</p>
+
+      <div class="field">
+        <label for="charName">Character name</label>
+        <div class="hint">A short, distinct name. This becomes part of your model's trigger word, so avoid common dictionary words.</div>
+        <input type="text" id="charName" placeholder="e.g. Maya, Kofi, Wren, Sol" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label>What kind of character is this?</label>
+        <div class="hint">Used to build your trigger word and caption template correctly.</div>
+        <div class="opts three" data-single="charType">
+          <div class="opt" data-val="woman"><span class="tick"></span><div><div class="ot">Woman</div></div></div>
+          <div class="opt" data-val="man"><span class="tick"></span><div><div class="ot">Man</div></div></div>
+          <div class="opt" data-val="creature"><span class="tick"></span><div><div class="ot">Stylized / creature</div><div class="od">non-human or heavily stylized</div></div></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="charLook">Describe their look in one line</label>
+        <div class="hint">The constant features that should never change — these get bound to the trigger word so the model locks them in.</div>
+        <input type="text" id="charLook" placeholder="e.g. teal locs, gold septum ring, oversized denim jacket" autocomplete="off">
+      </div>
+
+      <div class="nav">
+        <span class="note">step 1 of 6</span>
+        <button class="btn btn-primary" onclick="next()">Continue →</button>
+      </div>
+    </div>
+
+    <!-- STEP 2 — assets on hand -->
+    <div class="step" data-step="2">
+      <div class="step-head"><span class="step-num">02</span><h2>What you've got so far</h2></div>
+      <p class="sub">Your starting assets decide your first move. There's a path whether you have artwork ready or you're starting from nothing.</p>
+
+      <div class="field">
+        <label>Do you have reference images of this character?</label>
+        <div class="opts" data-single="hasImages">
+          <div class="opt" data-val="many"><span class="tick"></span><div><div class="ot">Yes — 15 or more</div><div class="od">enough to train a character model now</div></div></div>
+          <div class="opt" data-val="few"><span class="tick"></span><div><div class="ot">A handful (1–14)</div><div class="od">enough to generate more from</div></div></div>
+          <div class="opt" data-val="none"><span class="tick"></span><div><div class="ot">None yet — just an idea</div><div class="od">we'll start by designing the character</div></div></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Do you have music or audio ready?</label>
+        <div class="opts" data-single="hasMusic">
+          <div class="opt" data-val="yes"><span class="tick"></span><div><div class="ot">Yes — tracks ready to go</div></div></div>
+          <div class="opt" data-val="wip"><span class="tick"></span><div><div class="ot">In progress</div></div></div>
+          <div class="opt" data-val="no"><span class="tick"></span><div><div class="ot">Not yet</div></div></div>
+        </div>
+      </div>
+
+      <div class="nav">
+        <span class="note">step 2 of 6</span>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-ghost" onclick="prev()">← Back</button>
+          <button class="btn btn-primary" onclick="next()">Continue →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 3 — comfort / tools -->
+    <div class="step" data-step="3">
+      <div class="step-head"><span class="step-num">03</span><h2>Your setup</h2></div>
+      <p class="sub">This tunes how much hand-holding the generated guide gives you, and which tools it points you at.</p>
+
+      <div class="field">
+        <label>How comfortable are you with technical tools?</label>
+        <div class="opts" data-single="tech">
+          <div class="opt" data-val="low"><span class="tick"></span><div><div class="ot">Keep it simple</div><div class="od">web tools only, no code, no command line</div></div></div>
+          <div class="opt" data-val="mid"><span class="tick"></span><div><div class="ot">I can follow steps</div><div class="od">happy to paste commands if they're spelled out</div></div></div>
+          <div class="opt" data-val="high"><span class="tick"></span><div><div class="ot">I'm technical</div><div class="od">give me the scripts and the API route</div></div></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>What's your content style?</label>
+        <div class="hint">Shapes your prompt library's mood and the shot types you'll get.</div>
+        <input type="text" id="style" placeholder="e.g. cozy lo-fi jazz house, neon synthpop, acoustic folk" autocomplete="off">
+      </div>
+
+      <div class="nav">
+        <span class="note">step 3 of 6</span>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-ghost" onclick="prev()">← Back</button>
+          <button class="btn btn-primary" onclick="next()">Build my plan →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 4 — model training plan (generated) -->
+    <div class="step" data-step="4">
+      <div class="step-head"><span class="step-num">04</span><h2>Your model training plan</h2></div>
+      <p class="sub">This is the part most people get wrong. Follow it exactly and your character will stay consistent across every generation.</p>
+      <div id="out-train"></div>
+      <div class="nav">
+        <span class="note">step 4 of 6</span>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-ghost" onclick="prev()">← Back</button>
+          <button class="btn btn-primary" onclick="next()">Next: my prompts →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 5 — prompt library (generated) -->
+    <div class="step" data-step="5">
+      <div class="step-head"><span class="step-num">05</span><h2>Your prompt library</h2></div>
+      <p class="sub">Copy-paste ready, with your character's trigger word already filled in. These are starting points — tune the bracketed parts.</p>
+      <div id="out-prompts"></div>
+      <div class="nav">
+        <span class="note">step 5 of 6</span>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-ghost" onclick="prev()">← Back</button>
+          <button class="btn btn-primary" onclick="next()">Next: launch plan →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 6 — assets + 7 day plan (generated) -->
+    <div class="step" data-step="6">
+      <div class="step-head"><span class="step-num">06</span><h2>Your build plan</h2></div>
+      <p class="sub">Your asset checklist, your production status flow, and the next seven days mapped out.</p>
+      <div id="out-launch"></div>
+      <div class="nav">
+        <span class="note">step 6 of 6 — done</span>
+        <div class="outro-actions">
+          <button class="btn btn-ghost" onclick="prev()">← Back</button>
+          <button class="btn btn-primary" onclick="window.print()">Save / print my plan</button>
+          <button class="btn btn-ghost" onclick="restart()">Start over</button>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <footer id="foot" hidden>
+    Character Pipeline Builder · a guided setup template · runs entirely in your browser<br>
+    Built for creators making their own AI-animated characters. Your inputs are never sent anywhere.
+  </footer>
+</div>
+
+<script>
+/* ============================================================
+   STATE
+   ============================================================ */
+const S = {
+  charName:'', charType:'', charLook:'',
+  hasImages:'', hasMusic:'',
+  tech:'', style:''
+};
+let cur = 0;                // 0 = hero, 1..6 = steps
+const TOTAL = 6;
+const STEP_LABELS = ['Character','Assets','Setup','Model','Prompts','Launch'];
+
+/* ---------- step map chips ---------- */
+function paintMap(){
+  const m = document.getElementById('stepmap');
+  m.innerHTML = STEP_LABELS.map((l,i)=>{
+    const n = i+1;
+    let cls = 'chip';
+    if(n < cur) cls += ' done';
+    if(n === cur) cls += ' active';
+    return `<span class="${cls}"><i>${String(n).padStart(2,'0')}</i>${l}</span>`;
+  }).join('');
+}
+
+/* ---------- nav core ---------- */
+function begin(){ cur = 1; render(); document.getElementById('stage').scrollIntoView({behavior:'smooth'}); }
+
+function show(n){
+  document.querySelectorAll('.step').forEach(s=>s.classList.remove('live'));
+  const el = document.querySelector(`.step[data-step="${n}"]`);
+  if(el) el.classList.add('live');
+}
+
+function render(){
+  document.getElementById('hero').style.display = cur===0 ? '' : 'none';
+  document.getElementById('stage').hidden = cur===0;
+  document.getElementById('foot').hidden = cur===0;
+  document.getElementById('miniProg').hidden = cur===0;
+  document.getElementById('miniN').textContent = cur;
+  document.getElementById('trackFill').style.width = (cur/TOTAL*100)+'%';
+  paintMap();
+  if(cur>=1){ show(cur); }
+  // generate outputs when landing on output steps
+  if(cur===4) buildTrain();
+  if(cur===5) buildPrompts();
+  if(cur===6) buildLaunch();
+  window.scrollTo({top: cur===0?0:document.querySelector('.bar').offsetHeight+10, behavior:'smooth'});
+}
+
+function next(){
+  if(!validate(cur)) return;
+  if(cur < TOTAL){ cur++; render(); }
+}
+function prev(){ if(cur>1){ cur--; render(); } }
+function restart(){ for(const k in S) S[k]=''; document.querySelectorAll('.opt.sel').forEach(o=>o.classList.remove('sel')); document.querySelectorAll('input').forEach(i=>i.value=''); cur=0; render(); window.scrollTo({top:0,behavior:'smooth'}); }
+
+/* ---------- validation ---------- */
+function flash(msg){
+  // lightweight inline nudge
+  const note = document.querySelector(`.step[data-step="${cur}"] .note`);
+  if(note){ const t=note.textContent; note.textContent = msg; note.style.color='var(--accent)'; setTimeout(()=>{note.textContent=t; note.style.color='';},1800); }
+}
+function validate(step){
+  if(step===1){
+    S.charName = val('charName'); S.charLook = val('charLook');
+    if(!S.charName){ flash('enter a character name'); return false; }
+    if(!S.charType){ flash('pick a character type'); return false; }
+    return true;
+  }
+  if(step===2){
+    if(!S.hasImages){ flash('pick your image situation'); return false; }
+    if(!S.hasMusic){ flash('pick your music situation'); return false; }
+    return true;
+  }
+  if(step===3){
+    S.style = val('style');
+    if(!S.tech){ flash('pick a comfort level'); return false; }
+    return true;
+  }
+  return true;
+}
+function val(id){ const e=document.getElementById(id); return e? e.value.trim() : ''; }
+
+/* ---------- option selection ---------- */
+document.addEventListener('click', e=>{
+  const opt = e.target.closest('.opt');
+  if(!opt) return;
+  const group = opt.closest('[data-single]');
+  if(!group) return;
+  group.querySelectorAll('.opt').forEach(o=>o.classList.remove('sel'));
+  opt.classList.add('sel');
+  S[group.dataset.single] = opt.dataset.val;
+});
+
+/* ============================================================
+   DERIVED HELPERS
+   ============================================================ */
+function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'').slice(0,14) || 'char'; }
+function trigger(){ 
+  const t = S.charType==='man'?'man' : S.charType==='woman'?'woman' : 'character';
+  return `cpb_${slug(S.charName)}_${t}`;
+}
+function typeWord(){ return S.charType==='man'?'man':S.charType==='woman'?'woman':'character'; }
+function styleText(){ return S.style || 'your music style'; }
+
+function copyBtn(){ return `<button class="copy" onclick="copyCode(this)">copy</button>`; }
+function code(inner){ return `<div class="codeblock">${copyBtn()}${inner}</div>`; }
+
+function copyCode(btn){
+  const block = btn.parentElement;
+  const text = block.innerText.replace(/^copy\s*/,'').trim();
+  navigator.clipboard?.writeText(text).then(()=>{
+    btn.textContent='copied ✓'; btn.classList.add('ok');
+    setTimeout(()=>{ btn.textContent='copy'; btn.classList.remove('ok'); },1600);
+  }).catch(()=>{ btn.textContent='select + ⌘C'; });
+}
+
+/* ============================================================
+   STEP 4 — TRAINING PLAN
+   ============================================================ */
+function buildTrain(){
+  const tw = trigger();
+  const look = S.charLook || '[their constant features]';
+  let firstMove, firstMoveNote;
+
+  if(S.hasImages==='many'){
+    firstMove = 'Train your character model now.';
+    firstMoveNote = 'You have enough images. Skip straight to training.';
+  } else if(S.hasImages==='few'){
+    firstMove = 'Generate more reference images first, then train.';
+    firstMoveNote = 'Use your existing images as reference to produce a consistent set of 20–25, then train on those.';
+  } else {
+    firstMove = 'Design the character first, then build a reference set.';
+    firstMoveNote = 'Lock the design across several angles and outfits before training — consistency in the training set is everything.';
+  }
+
+  const out = `
+    <div class="panel accent">
+      <h3>Your first move <span class="n">— based on what you have</span></h3>
+      <div style="font-size:18px;font-weight:600;margin-bottom:6px">${firstMove}</div>
+      <div style="color:var(--ink-dim)">${firstMoveNote}</div>
+    </div>
+
+    <div class="panel">
+      <h3>Your trigger word</h3>
+      <p style="color:var(--ink-dim);margin-bottom:8px">This is the unique word that summons your character. Use it in every prompt. It's deliberately not a real word so the model doesn't confuse it with anything else.</p>
+      ${code(`<span class="tok-var">${tw}</span>`)}
+      <div class="callout">Caption rule that makes or breaks consistency: in every training caption, attach the constant features to the trigger word. Write <b>"${tw}, ${look}, [pose/scene that changes]"</b> — never describe the constant features as if they vary. If you let auto-captioning describe their hair or outfit every time, the model learns those as variable and your character drifts.</div>
+    </div>
+
+    <div class="panel">
+      <h3>Training settings that work</h3>
+      <dl class="kv">
+        <dt>image count</dt><dd>15 floor · <b style="color:var(--accent)">20–25 is the sweet spot</b> · diminishing returns past 40</dd>
+        <dt>variety</dt><dd>same character, different angles, poses, lighting, distances. Vary everything <i>except</i> the constant features.</dd>
+        <dt>captions</dt><dd>hand-written, not auto-generated. Trigger word + constants first, then what changes.</dd>
+        <dt>steps</dt><dd>start at 1000. More is not better — too many overfits and the character gets stiff and copy-pasted.</dd>
+        <dt>base model</dt><dd>a current Flux-family base trains characters cleanly and stays compatible with most animation tools.</dd>
+      </dl>
+    </div>
+
+    <div class="panel">
+      <h3>Caption template <span class="n">— copy this format for every image</span></h3>
+      ${code(`<span class="tok-var">${tw}</span>, ${look}, <span class="tok-key">[what's different in THIS image]</span>
+
+Examples:
+<span class="tok-var">${tw}</span>, ${look}, sitting at a window, soft morning light, side view
+<span class="tok-var">${tw}</span>, ${look}, mid-laugh, close-up, warm indoor lighting
+<span class="tok-var">${tw}</span>, ${look}, full body, walking, neon street at night`)}
+    </div>
+
+    ${S.hasImages==='none' ? `
+    <div class="panel">
+      <h3>Since you're starting from an idea</h3>
+      <ul class="checklist">
+        <li><span class="mk">1</span><div>Write a tight visual description of <b>${S.charName||'your character'}</b> — the constants only: ${look}.</div></li>
+        <li><span class="mk">2</span><div>Generate a first portrait you love. This is your anchor image.</div></li>
+        <li><span class="mk">3</span><div>Use that anchor as a reference to generate the same character in 20–25 varied poses and angles.</div></li>
+        <li><span class="mk">4</span><div>Hand-caption all of them with the template above, then train.</div></li>
+      </ul>
+    </div>` : ''}
+
+    ${S.tech==='high' ? `
+    <div class="panel">
+      <h3>Technical note <span class="n">— since you're comfortable with code</span></h3>
+      <p style="color:var(--ink-dim);margin-bottom:6px">Hosted trainers (Replicate-style) let you kick off a training run from a script. Zip your captioned set, point the trainer at it, set steps to 1000, and pass your trigger word. Pseudostructure:</p>
+      ${code(`train(
+  base_model = <span class="tok-key">"flux-dev"</span>,
+  input_images = <span class="tok-key">"./${slug(S.charName)}_set.zip"</span>,
+  trigger_word = <span class="tok-var">"${tw}"</span>,
+  steps = <span class="tok-key">1000</span>,
+  caption_mode = <span class="tok-key">"custom"</span>   <span style="color:var(--ink-faint)"># use your hand-written captions</span>
+)`)}
+    </div>` : ''}
+  `;
+  document.getElementById('out-train').innerHTML = out;
+}
+
+/* ============================================================
+   STEP 5 — PROMPT LIBRARY
+   ============================================================ */
+function buildPrompts(){
+  const tw = trigger();
+  const look = S.charLook || 'their signature look';
+  const st = styleText();
+
+  const out = `
+    <div class="panel accent">
+      <h3>The multi-character rule <span class="n">— read this first</span></h3>
+      <p style="color:var(--ink)">Quality falls apart when you stack more than two character models in one generation. To put several characters in one scene, build it up <b>one character at a time</b> using inpainting — place character one, lock it, inpaint character two into the same frame, and so on. Then animate the finished composite still. Don't fight the stacking limit; work around it.</p>
+    </div>
+
+    <div class="panel">
+      <h3>Still — hero portrait</h3>
+      ${code(`<span class="tok-var">${tw}</span>, ${look}, cinematic portrait, ${st} mood, shallow depth of field, soft key light, <span class="tok-key">[setting]</span>`)}
+    </div>
+
+    <div class="panel">
+      <h3>Still — performance shot</h3>
+      ${code(`<span class="tok-var">${tw}</span>, ${look}, playing <span class="tok-key">[instrument]</span>, mid-performance, expressive, stage lighting, ${st} energy, medium shot`)}
+    </div>
+
+    <div class="panel">
+      <h3>Still — everyday / "in their world"</h3>
+      ${code(`<span class="tok-var">${tw}</span>, ${look}, <span class="tok-key">[doing something ordinary — making coffee, on a couch, walking]</span>, natural light, candid, relaxed`)}
+    </div>
+
+    <div class="panel">
+      <h3>Animation prompt <span class="n">— feed a still in, describe only the motion</span></h3>
+      <p style="color:var(--ink-dim);margin-bottom:8px">For animation, pass your finished still as the input image and describe <i>movement</i>, not appearance. The image carries the look; the prompt carries the motion.</p>
+      ${code(`<span class="tok-key">[subtle head bob to the beat, fingers moving on the instrument, slow breathing, hair shifting gently, blinking naturally]</span>, locked camera, ${st} tempo`)}
+    </div>
+
+    <div class="panel">
+      <h3>Shot variety <span class="n">— so it doesn't feel AI-generic</span></h3>
+      <ul class="checklist">
+        <li><span class="mk">▸</span><div><b>Vary shot length.</b> A 30-second short wants ~20 distinct stills, not 4 long holds. Cut on the beat.</div></li>
+        <li><span class="mk">▸</span><div><b>Use insert shots.</b> Hands on the instrument, a detail of ${look}, a reaction. Inserts hide seams and add rhythm.</div></li>
+        <li><span class="mk">▸</span><div><b>Mix distances.</b> Close-up → medium → wide. Same character, different framing keeps the eye moving.</div></li>
+        <li><span class="mk">▸</span><div><b>Real footage collides well.</b> If you have any real performance clips, cutting them in next to animation makes both read as more intentional.</div></li>
+      </ul>
+    </div>
+  `;
+  document.getElementById('out-prompts').innerHTML = out;
+}
+
+/* ============================================================
+   STEP 6 — LAUNCH PLAN
+   ============================================================ */
+function buildLaunch(){
+  const name = S.charName || 'your character';
+  const musicLine = S.hasMusic==='yes'
+    ? 'You already have music — that means you can go straight to matching visuals to a track.'
+    : S.hasMusic==='wip'
+    ? 'Your music is in progress — block visuals around the track you finish first.'
+    : 'No music yet — your day one is getting one short piece of audio to build the first clip against.';
+
+  const day1 = S.hasImages==='none'
+    ? `Design ${name}. Generate your anchor portrait and lock the look.`
+    : S.hasImages==='few'
+    ? `Generate ${name}'s reference set — get to 20–25 consistent images.`
+    : `Caption your ${name} image set using the template, then start the training run.`;
+
+  const out = `
+    <div class="panel accent">
+      <h3>Your project at a glance</h3>
+      <dl class="kv">
+        <dt>character</dt><dd><b>${name}</b> — ${S.charLook||'—'}</dd>
+        <dt>trigger word</dt><dd style="font-family:var(--mono);color:var(--good)">${trigger()}</dd>
+        <dt>style</dt><dd>${styleText()}</dd>
+        <dt>starting point</dt><dd>${S.hasImages==='many'?'training-ready':S.hasImages==='few'?'expanding reference set':'designing from an idea'} · ${musicLine}</dd>
+      </dl>
+    </div>
+
+    <div class="panel">
+      <h3>Asset checklist <span class="n">— set this up once</span></h3>
+      <ul class="checklist">
+        <li><span class="mk">☐</span><div>A folder per character for reference images and the trained model.</div></li>
+        <li><span class="mk">☐</span><div>A folder for audio — one subfolder per track.</div></li>
+        <li><span class="mk">☐</span><div>A "stills" folder for approved character generations, named by shot.</div></li>
+        <li><span class="mk">☐</span><div>A "clips" folder for animated output before editing.</div></li>
+        <li><span class="mk">☐</span><div>One running doc with your trigger word(s), best prompts, and what worked.</div></li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h3>Production status flow <span class="n">— how a piece moves to published</span></h3>
+      <p style="color:var(--ink-dim);margin-bottom:12px">Track every video through these six states. Knowing exactly where each piece sits is what lets you scale past one-offs.</p>
+      ${code(`new  →  audio cut  →  prompts ready  →  review  →  approved  →  published`)}
+      <div class="callout">When you bring on help later, scope them to <b>review</b> and <b>community</b> only at first — keep generation in your hands until the system is stable.</div>
+    </div>
+
+    <div class="panel">
+      <h3>Your next 7 days</h3>
+      <div class="daygrid">
+        <div class="day"><div class="dn">Day 1</div><div class="dt"><b>${day1}</b></div></div>
+        <div class="day"><div class="dn">Day 2</div><div class="dt"><b>Finish the reference set / training.</b><span>While it trains, set up your asset folders above.</span></div></div>
+        <div class="day"><div class="dn">Day 3</div><div class="dt"><b>Test ${name}.</b><span>Run the hero portrait prompt. Check consistency. Re-caption and retrain if the look drifts.</span></div></div>
+        <div class="day"><div class="dn">Day 4</div><div class="dt"><b>Generate your first batch of stills.</b><span>Aim for ~20 varied shots for one short. Mix close / medium / wide.</span></div></div>
+        <div class="day"><div class="dn">Day 5</div><div class="dt"><b>Animate.</b><span>Feed your best stills in, describe motion only. Build 3–5 short clips.</span></div></div>
+        <div class="day"><div class="dn">Day 6</div><div class="dt"><b>Edit your first short.</b><span>Cut to the beat. Add an insert shot or two. Keep it under 30 seconds.</span></div></div>
+        <div class="day"><div class="dn">Day 7</div><div class="dt"><b>Publish one thing.</b><span>Ship it imperfect. The system improves by running, not by planning.</span></div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>You're set up</h3>
+      <p style="color:var(--ink-dim)">You now have ${name}'s trigger word, a training plan tuned to what you have, a prompt library, an asset structure, a status flow, and a week mapped out. Save this page (print → save as PDF) so your whole setup is in one place. Then go run Day 1.</p>
+    </div>
+  `;
+  document.getElementById('out-launch').innerHTML = out;
+}
+
+/* init */
+paintMap();
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+# Secrets — never commit keys
+.env
+*.env
+!.env.example
+
+# Generated / user assets — never committed (stay on the buyer's machine)
+stills/
+clips/
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.mp4
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
