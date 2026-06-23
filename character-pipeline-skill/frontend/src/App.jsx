@@ -4,6 +4,18 @@ import {
   OptionCard, Field, Stepmap, CopyButton,
 } from './components.jsx'
 import * as P from './data/plan.js'
+import { CHECKOUT_URL, PRICE_LABEL, CHECKOUT_READY } from './config.js'
+
+// "Get the skill" → Lemon Squeezy checkout. With a real store URL, lemon.js opens
+// it as an overlay (class hook); until then it's a plain link to the placeholder.
+function GetSkillButton({ variant = 'primary' }) {
+  const cls = `btn btn-${variant}${CHECKOUT_READY ? ' lemonsqueezy-button' : ''}`
+  return (
+    <a className={cls} href={CHECKOUT_URL} target="_blank" rel="noopener noreferrer">
+      Get the skill{PRICE_LABEL ? ` — ${PRICE_LABEL}` : ''} →
+    </a>
+  )
+}
 
 const STEP_LABELS = ['Character', 'Assets', 'Setup', 'Model', 'Prompts', 'Launch']
 const TOTAL = 6
@@ -113,21 +125,66 @@ function Hero({ onBegin, labels }) {
       <div className="eyebrow">REVEAL · the pipeline behind The Roommates</div>
       <h1>Build your character.<br /><span className="thin">We hand you the whole pipeline.</span></h1>
       <p className="lede">
-        This is the exact production system behind The Roommates — train a consistent character,
-        generate stills, animate them. Answer a few questions and we’ll generate your trigger word,
-        a training plan tuned to what you have, a prompt library, and your first week. Then the
-        Claude skill runs the train → stills → animate pass on your own keys.
+        Train your own animated character once, then generate consistent stills and short
+        animations of it forever — all guided from inside Claude. It’s the exact production
+        system behind The Roommates, packaged as a Claude skill that runs on your own keys.
       </p>
       <div className="start-row">
-        <button className="btn btn-primary" onClick={onBegin}>Start building →</button>
-        <a className="btn btn-ghost" href="/character-pipeline-skill.zip" download>Download the skill</a>
+        <button className="btn btn-primary" onClick={onBegin}>Try the free planner →</button>
+        <GetSkillButton variant="ghost" />
         <span className="meta">~6 minutes · nothing leaves your browser</span>
       </div>
+      <p className="meta">
+        The planner is free. Checkout delivers the skill + a step-by-step setup guide —
+        works with Claude Code or Claude Desktop, runs on your own keys.
+      </p>
+
       <div className="value-row">
         <Value k="Train" v="A character LoRA on Replicate — captioned to stay consistent." cost="~$2–4 one-time" />
         <Value k="Stills" v="A batch of on-model stills from your trained character." cost="under $1 / ~20" />
         <Value k="Animate" v="Short clips on Runway — your still in, motion out." cost="~$0.05–0.12 / sec" />
       </div>
+      <p className="cost-note">Run costs above are your own spend on Replicate + Runway — separate from the one-time purchase. Nothing is metered by us.</p>
+
+      <div className="hero-grid">
+        <InfoCard title="What’s in the zip">
+          <ul className="bullets">
+            <li>The <b>Claude Skill</b> itself — <code>SKILL.md</code>, the orchestration brain Claude follows</li>
+            <li>Three wired <b>Python scripts</b> — train the LoRA, generate stills, animate on Runway</li>
+            <li>A <b>prompt library</b> — copy-paste still + motion prompts refined on real production</li>
+            <li>The <b>captioning + expand-set guides</b> — the rules that keep a character on-model</li>
+            <li><b>START_HERE.md</b> — a literal, click-by-click setup + first-run walkthrough</li>
+          </ul>
+        </InfoCard>
+        <InfoCard title="What you need">
+          <ul className="bullets">
+            <li><b>Claude Desktop</b> (Skills) <b>or Claude Code</b> — either works</li>
+            <li>A <b>Replicate</b> account (training + stills)</li>
+            <li>A <b>Runway</b> account (animation)</li>
+            <li>Basic comfort <b>copy-pasting in a terminal</b> — the guide spells every command out</li>
+          </ul>
+        </InfoCard>
+      </div>
+
+      <div className="forwho">
+        <div className="forwho-col is-for">
+          <div className="fw-head">This is for you if</div>
+          <ul className="bullets">
+            <li>You make <b>short-form animated content</b> (music, characters, story) and want the same character to show up shot after shot</li>
+            <li>You want a <b>repeatable pipeline you own</b> — your keys, your accounts, no subscription to us</li>
+            <li>You’re fine pasting a few commands when each one is written out for you</li>
+          </ul>
+        </div>
+        <div className="forwho-col is-not">
+          <div className="fw-head">Not for you if</div>
+          <ul className="bullets">
+            <li>You want a <b>zero-code, drag-and-drop</b> web app with no setup</li>
+            <li>You’ve <b>never touched an AI tool</b> and don’t want to start with API keys</li>
+            <li>You expect <b>one button</b> that makes a finished video with no iteration</li>
+          </ul>
+        </div>
+      </div>
+
       <Stepmap labels={labels} current={0} />
     </section>
   )
@@ -138,6 +195,14 @@ function Value({ k, v, cost }) {
       <div className="value-k">{k}</div>
       <div className="value-v">{v}</div>
       <div className="value-cost">{cost} · your spend, on your keys</div>
+    </div>
+  )
+}
+function InfoCard({ title, children }) {
+  return (
+    <div className="info-card">
+      <div className="ic-head">{title}</div>
+      {children}
     </div>
   )
 }
@@ -199,8 +264,20 @@ function StepSetup({ s, set }) {
           <OptionCard selected={s.tech === 'high'} title="I’m technical" desc="give me the scripts and the API route" onClick={() => set('tech', 'high')} />
         </div>
       </Field>
-      <Field label="What’s your content style?" hint="Shapes your prompt library’s mood and the shot types you’ll get.">
-        <input type="text" value={s.style} onChange={(e) => set('style', e.target.value)} placeholder="e.g. cozy lo-fi, neon synthpop, warm flat illustration" autoComplete="off" />
+      <Field label="What’s your content style?" hint="The look and mood of your finished pieces. This seeds your prompt library — the lighting, palette, and shot vocabulary it suggests. A short vibe is enough; you can tune it later. Tap one to start, or type your own:">
+        <input type="text" value={s.style} onChange={(e) => set('style', e.target.value)} placeholder="e.g. cozy lo-fi bedroom, neon synthwave, warm flat illustration" autoComplete="off" />
+        <div className="suggest-row">
+          {['cozy lo-fi', 'neon synthwave', 'warm flat illustration', 'moody cinematic', 'bright anime', 'gritty film-grain'].map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              className={`suggest${s.style === opt ? ' on' : ''}`}
+              onClick={() => set('style', opt)}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
       </Field>
     </>
   )
@@ -307,7 +384,9 @@ function StepLaunch({ s, onRestart }) {
           <code>{brief}</code>
         </div>
         <p className="dim mb" style={{ marginTop: 14 }}>
-          Don’t have the skill yet? <a href="/character-pipeline-skill.zip" download>Download the Character Pipeline skill</a> and add it to Claude.
+          Don’t have the skill yet?{' '}
+          <a href={CHECKOUT_URL} className={CHECKOUT_READY ? 'lemonsqueezy-button' : undefined} target="_blank" rel="noopener noreferrer">Get the Character Pipeline skill</a>
+          {' '}— it ships with a step-by-step setup guide for Claude Code or Desktop.
         </p>
       </Panel>
 

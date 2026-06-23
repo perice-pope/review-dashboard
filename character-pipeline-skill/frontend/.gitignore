@@ -1,5 +1,6 @@
 node_modules/
 dist/
 
-# Generated at build time by scripts/pack-skill.mjs (prebuild) — never commit
-public/character-pipeline-skill.zip
+# Paid skill artifact built by `npm run pack:skill` — never commit, never serve
+skill-dist/
+.vercel

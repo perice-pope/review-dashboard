@@ -13,10 +13,19 @@ as a scheduling input, never something this pipeline produces.
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
-npm run build    # production build → dist/
-npm run preview  # serve the build
+npm run dev        # http://localhost:5173
+npm run build      # production build → dist/
+npm run preview    # serve the build
+npm run pack:skill # build the PAID skill zip → skill-dist/ (gitignored, never served)
 ```
+
+## Selling it
+
+The site is the free lead magnet; the **skill zip is the paid product**, delivered
+by Lemon Squeezy. To build the zip, upload it to Lemon Squeezy, and wire the
+checkout URL into the site, follow **[RELEASE.md](./RELEASE.md)** — the full
+seller playbook (build → upload → set `VITE_CHECKOUT_URL` in Vercel → redeploy →
+test purchase). The checkout URL and price come from env vars; see `src/config.js`.
 
 ## Flow
 
